@@ -168,6 +168,14 @@ pub const Lexer = struct {
 
         while (program.len > 0) {
             program = std.mem.trimLeft(u8, program, " \t");
+            if (std.mem.startsWith(u8, program, "//")) {
+                const comment_end: usize = std.mem.indexOfAny(u8, program, "\r\n") orelse program.len;
+                assert(comment_end <= program.len);
+
+                program = program[comment_end..];
+                current_line = strings.get_line(program);
+                continue;
+            }
 
             if (program[0] == '\r' or program[0] == '\n') {
                 //TODO(shahzad): this fks up multiple new lines
