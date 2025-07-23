@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ascii = std.ascii;
 const strings = @import("strings.zig");
@@ -47,7 +48,21 @@ pub const TokenKind = union(enum) {
     CurlyClose: void,
     Arrow: void,
     Semi: void,
+    Colon: void,
+
+    // keywords
+    ProcDef: void,
+    VarDef: void,
+
+    If: void,
+    Else: void,
+    While: void,
+    For: void,
+
     Return: void,
+
+    //end of file
+    Eof: void,
 
     pub fn from_str(tok: []const u8) !struct { usize, TokenKind } {
         //TODO(shahzad)!: add function to parse float
@@ -73,6 +88,9 @@ pub const TokenKind = union(enum) {
             '=' => {
                 return .{ 1, .OpAss };
             },
+            ':' => {
+                return .{ 1, .Colon };
+            },
             ';' => {
                 return .{ 1, .Semi };
             },
@@ -86,7 +104,11 @@ pub const TokenKind = union(enum) {
                     ident_idx += 1;
                 }
                 ident.len = ident_idx;
-                if (std.mem.eql(u8, ident, "return")) {
+                if (std.mem.eql(u8, ident, "proc")) {
+                    return .{ ident.len, .ProcDef };
+                } else if (std.mem.eql(u8, ident, "let")) {
+                    return .{ ident.len, .VarDef };
+                } else if (std.mem.eql(u8, ident, "return")) {
                     return .{ ident.len, .Return };
                 }
 
@@ -119,6 +141,13 @@ pub const Token = struct {
             .line = line,
             .source = source,
         };
+    }
+    pub fn print_location(self: Self) void {
+        const current_line = self.line;
+        const current_token_start = (self.source.ptr - current_line.ptr);
+
+        std.debug.print("error: unexpected token: \"{s}\"\n", .{current_line});
+        _ = libc.printf("error:%*s^\n", 20 + (current_token_start), "");
     }
 };
 
@@ -172,7 +201,7 @@ pub const Lexer = struct {
             program = program[consumed_length..];
 
             try self.tokens.append(token);
-            std.log.debug("{} \"{s}\"\n", .{ token.kind, token.source });
         }
+        try self.tokens.append(.{ .kind = .Eof, .line = undefined, .source = undefined });
     }
 };
