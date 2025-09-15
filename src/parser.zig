@@ -86,9 +86,9 @@ pub const Parser = struct {
                 self.tokens.advance(1);
             },
             .CurlyOpen => {
-                //TODO(shahzad)!!!!!: instead of duplicating the procedure declaration
-                //only store it in the ProcDecl array and attach an index to it that specifies
-                //the procDef
+                // @TODO(shahzad)!!!!!: instead of duplicating the procedure declaration
+                // only store it in the ProcDecl array and attach an index to it that specifies
+                // the procDef
                 const code_block = try self.parse_block();
                 try module.proc_defs.append(.init(module.allocator, proc_decl, code_block));
             },
@@ -166,7 +166,7 @@ pub const Parser = struct {
         while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
             const statement = try self.parse_stmt();
             try statements.append(statement);
-            std.log.debug("{}", .{std.json.fmt(statement, .{})});
+            std.log.debug("{}", .{statement});
         }
         self.tokens.advance(1);
 
@@ -199,16 +199,16 @@ pub const Parser = struct {
                     type_name = (try self.expect(.Ident, "'type definition'")).source;
                 }
 
-                //TODO(shahzad): add support for assignment during initialization of variable
+                // @TODO(shahzad): add support for assignment during initialization of variable
                 _ = try self.expect(.Semi, null);
                 if (is_mut) {
-                    return .{ .VarDefStackMut = .{ .name = var_name, ._type = type_name } };
+                    return .{ .VarDefStackMut = .{ .name = var_name, .type = type_name } };
                 } else {
-                    return .{ .VarDefStack = .{ .name = var_name, ._type = type_name } };
+                    return .{ .VarDefStack = .{ .name = var_name, .type = type_name } };
                 }
             },
             .Ident => {
-                //TODO(shahzad): implement correct parsing of assignments, i.e. Literals shouldn't get assigned
+                // @TODO(shahzad): implement correct parsing of assignments, i.e. Literals shouldn't get assigned
                 const lhs = try self.parse_expr();
                 switch (lhs) {
                     .Var => {
@@ -222,8 +222,17 @@ pub const Parser = struct {
                         return .{ .Assign = .{ .lhs = lhs, .rhs = rhs } };
                     },
                     .Call => {
-                        const call_expr = try self.parse_expr();
-                        return .{ .Call = call_expr.Call };
+                        const params = try self.parse_proc_params();
+                        var as_proc_call = lhs;
+                        as_proc_call.Call.params = params;
+                        // @FIXME(shahzad): this makes it so we can not do field access of struct pointers return by functions
+                        // i.e. 'proc foo() -> ^bar;   foo().bar = 69;'
+                        _ = self.expect(.Semi, "';'") catch |err| {
+                            std.log.err("@FIXME(shahzad): this makes it so we can not do field access of struct pointers return by functions", .{});
+                            std.log.err("i.e. 'proc foo() -> ^bar;   foo().bar = 69;'", .{});
+                            return err;
+                        };
+                        return .{ .Assign = .{ .lhs = .NoOp, .rhs = as_proc_call } };
                     },
                     else => {
                         std.debug.panic("parse_statement only implemented for variable assignment and call!", .{});
@@ -249,27 +258,32 @@ pub const Parser = struct {
         _ = try self.expect(.ParenOpen, null);
         const token_kind = self.tokens.peek(0).?.kind;
         if (token_kind == .ParenClose) {
+            self.tokens.advance(1);
             return params;
         }
         while (true) {
-            const expr = self.parse_expr();
-            params.append(expr);
+            const expr = try self.parse_expr();
+            try params.append(expr);
             const next = self.tokens.peek(0).?;
             switch (next.kind) {
                 .Comma => {
                     self.tokens.advance(1);
                     continue;
                 },
-                .ParenClose => break,
+                .ParenClose => {
+                    self.tokens.advance(1);
+                    break;
+                },
                 else => {
                     self.tokens.peek(0).?.print_loc();
                     return Ast.Error.UnexpectedToken;
                 },
             }
         }
+        return params;
     }
 
-    fn parse_expr(self: *Self) !Ast.Expression {
+    fn parse_expr(self: *Self) anyerror!Ast.Expression {
         const token = self.tokens.consume();
         assert(token != null);
         switch (token.?.kind) {
@@ -278,12 +292,11 @@ pub const Parser = struct {
                 assert(next != null);
 
                 switch (next.?.kind) {
-                    .OpAss, .Semi => {
+                    .OpAss, .Comma, .Semi, .ParenClose => {
                         return .{ .Var = token.?.source };
                     },
                     .ParenOpen => {
-                        const param_list = try self.parse_proc_params();
-                        return .{ .Call = .{ .name = token.?.source, .params = param_list } };
+                        return .{ .Call = .{ .name = token.?.source, .params = undefined } };
                     },
                     else => {
                         return Ast.Error.UnexpectedToken;
@@ -291,10 +304,11 @@ pub const Parser = struct {
                 }
             },
             .LiteralInt => {
-                //TODO(shahzad): parse bin op
+                // @TODO(shahzad): parse bin op
                 return .{ .LiteralInt = token.?.kind.LiteralInt };
             },
             else => {
+                token.?.print_loc();
                 std.debug.panic("expression parsing for {} is not implemented!", .{token.?.kind});
             },
         }
