@@ -1,4 +1,6 @@
 const std = @import("std");
+const LazyPath = std.Build.LazyPath;
+const CSourceFile = std.Build.Module.CSourceFile;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -15,6 +17,10 @@ pub fn build(b: *std.Build) void {
         .name = "hcc",
         .root_module = exe_mod,
     });
+
+    exe.addIncludePath(b.path("./src"));
+
+    exe.addCSourceFile(.{.file = b.path("./src/nob.c")});
 
     exe.linkLibC();
 
