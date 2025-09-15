@@ -1,0 +1,316 @@
+const std = @import("std");
+const assert = std.debug.assert;
+
+const Ast = @import("ast.zig");
+const Token = @import("lexer.zig").Token;
+const TokenKind = @import("lexer.zig").TokenKind;
+
+pub fn Peekable(T: type) type { // oop ahh :sob:
+    return struct {
+        comptime {
+            std.debug.assert(@typeInfo(T) == .pointer);
+            std.debug.assert(@typeInfo(T).pointer.size == .slice);
+        }
+        items: T,
+        const Self = @This();
+        pub fn init(item: T) Self {
+            return .{ .items = item };
+        }
+
+        pub fn consume(self: *Self) ?Token {
+            if (self.items.len > 0) {
+                const copy = self.items[0];
+                self.items = self.items[1..];
+                return copy;
+            } else {
+                return null;
+            }
+        }
+        pub fn peek(self: *Self, offset: usize) ?Token {
+            if (self.items.len > 0 and offset < self.items.len) return self.items[offset] else return null;
+        }
+        pub fn advance(self: *Self, by: usize) void {
+            self.items = self.items[by..];
+        }
+    };
+}
+
+pub const Parser = struct {
+    allocator: std.mem.Allocator,
+    tokens: Peekable([]Token),
+    const Self = @This();
+    pub fn init(allocator: std.mem.Allocator, tokens: []Token) Self {
+        return .{ .allocator = allocator, .tokens = Peekable([]Token).init(tokens) };
+    }
+    pub fn parse(self: *Self, source_context: Ast.SourceContext) !Ast.Module {
+        var module: Ast.Module = undefined;
+        var has_main_function: bool = false;
+
+        module.init(self.allocator, source_context);
+        while (self.tokens.peek(0).?.kind != .Eof) {
+            const token: Token = self.tokens.peek(0).?;
+            switch (token.kind) {
+                .ProcDecl => {
+                    const proc_decl = try self.parse_proc(&module);
+                    if (std.mem.eql(u8, proc_decl.name, "main")) {
+                        has_main_function = true;
+                    }
+                },
+                .VarDef => { // global variable
+                    std.log.err("global variables are not supported!", .{});
+                    self.tokens.peek(0).?.print_loc();
+                },
+                .Eof => {
+                    unreachable;
+                },
+                else => {
+                    std.log.debug("{}", .{token.kind});
+                    unreachable;
+                },
+            }
+        }
+        assert(self.tokens.peek(0).?.kind == .Eof);
+
+        module.has_main_func = has_main_function;
+        return module;
+    }
+    // parse the procedure and return only the declaration for some use
+    pub fn parse_proc(self: *Self, module: *Ast.Module) !Ast.ProcDecl {
+        const proc_decl = self.parse_proc_decl() catch |err| {
+            self.tokens.peek(0).?.print_loc();
+            return err;
+        };
+        switch (self.tokens.peek(0).?.kind) {
+            .Semi => {
+                try module.proc_decls.append(proc_decl);
+                self.tokens.advance(1);
+            },
+            .CurlyOpen => {
+                //TODO(shahzad)!!!!!: instead of duplicating the procedure declaration
+                //only store it in the ProcDecl array and attach an index to it that specifies
+                //the procDef
+                const code_block = try self.parse_block();
+                try module.proc_defs.append(.init(module.allocator, proc_decl, code_block));
+            },
+            else => {
+                _ = self.expect(.CurlyOpen, "'{' or ';'") catch |err| {
+                    self.tokens.peek(0).?.print_loc();
+                    return err;
+                };
+            },
+        }
+        return proc_decl;
+    }
+
+    fn parse_proc_decl(self: *Self) !Ast.ProcDecl {
+        _ = try self.expect(.ProcDecl, "procedure definition");
+        const proc_name = try self.expect(.Ident, null);
+
+        const proc_args = try self.parse_proc_args();
+        _ = try self.expect(.Arrow, null);
+        const return_type = (try self.expect(.Ident, "'return type'")).source;
+        return .init(proc_name.source, proc_args, return_type);
+    }
+    fn parse_arg(self: *Self) !Ast.Argument {
+        var token = self.tokens.peek(0).?;
+        const mutable = blk: {
+            if (token.kind == .Mut) {
+                self.tokens.advance(1);
+                break :blk true;
+            } else {
+                break :blk false;
+            }
+        };
+        token = try self.expect(.Ident, "variable name");
+        const var_name = token.source;
+        _ = try self.expect(.Colon, null);
+        token = try self.expect(.Ident, "type");
+        const var_type = token.source;
+        var arg_def: Ast.Argument = undefined;
+        arg_def.init(var_name, undefined, var_type, mutable);
+        return arg_def;
+    }
+
+    fn parse_proc_args(self: *Self) !std.ArrayList(Ast.Argument) {
+        var param_defs = std.ArrayList(Ast.Argument).init(self.allocator);
+        _ = try self.expect(.ParenOpen, null);
+        while (self.tokens.peek(0).?.kind != .ParenClose) {
+            const arg = try self.parse_arg();
+            try param_defs.append(arg);
+            const next = self.tokens.peek(0).?;
+            switch (next.kind) {
+                .Comma => {
+                    self.tokens.advance(1);
+                    continue;
+                },
+                .ParenClose => {},
+                else => {
+                    _ = try self.expect(.ParenClose, null);
+                },
+            }
+        }
+
+        _ = self.expect(.ParenClose, null) catch |err| {
+            self.tokens.peek(0).?.print_loc();
+            return err;
+        };
+        return param_defs;
+    }
+
+    fn parse_block(self: *Self) !std.ArrayList(Ast.Statement) {
+        _ = try self.expect(.CurlyOpen, null);
+
+        var statements = std.ArrayList(Ast.Statement).init(self.allocator);
+        errdefer statements.deinit();
+
+        while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
+            const statement = try self.parse_stmt();
+            try statements.append(statement);
+            std.log.debug("{}", .{std.json.fmt(statement, .{})});
+        }
+        self.tokens.advance(1);
+
+        return statements;
+    }
+
+    fn parse_stmt(self: *Self) !Ast.Statement {
+        var token = self.tokens.peek(0);
+        assert(token != null);
+        switch (token.?.kind) {
+            .VarDef => {
+                self.tokens.advance(1);
+                const next_tok = self.tokens.peek(0);
+
+                const is_mut = blk: {
+                    if (next_tok.?.kind == .Mut) {
+                        self.tokens.advance(1);
+                        break :blk true;
+                    }
+                    break :blk false;
+                };
+                const var_name = (try self.expect(.Ident, "'variable name'")).source;
+                token = self.tokens.peek(0);
+                assert(token != null);
+
+                var type_name: ?[]const u8 = null;
+
+                if (std.meta.eql(token.?.kind, .Colon)) {
+                    self.tokens.advance(1);
+                    type_name = (try self.expect(.Ident, "'type definition'")).source;
+                }
+
+                //TODO(shahzad): add support for assignment during initialization of variable
+                _ = try self.expect(.Semi, null);
+                if (is_mut) {
+                    return .{ .VarDefStackMut = .{ .name = var_name, ._type = type_name } };
+                } else {
+                    return .{ .VarDefStack = .{ .name = var_name, ._type = type_name } };
+                }
+            },
+            .Ident => {
+                //TODO(shahzad): implement correct parsing of assignments, i.e. Literals shouldn't get assigned
+                const lhs = try self.parse_expr();
+                switch (lhs) {
+                    .Var => {
+                        _ = try self.expect(.OpAss, null); // you can't write a variable and do no op on it
+                        const rhs = try self.parse_expr();
+
+                        _ = self.expect(.Semi, null) catch |err| {
+                            self.tokens.peek(0).?.print_loc();
+                            return err;
+                        };
+                        return .{ .Assign = .{ .lhs = lhs, .rhs = rhs } };
+                    },
+                    .Call => {
+                        const call_expr = try self.parse_expr();
+                        return .{ .Call = call_expr.Call };
+                    },
+                    else => {
+                        std.debug.panic("parse_statement only implemented for variable assignment and call!", .{});
+                    },
+                }
+            },
+            .Return => {
+                self.tokens.advance(1);
+                var expr: ?Ast.Expression = null;
+                if (!std.meta.eql(self.tokens.peek(0).?.kind, .Semi)) {
+                    expr = try self.parse_expr();
+                }
+                _ = try self.expect(.Semi, null);
+                return .{ .Return = .{ .expr = expr } };
+            },
+            else => {
+                std.debug.panic("parse_statement for {} is not implemented!", .{token.?.kind});
+            },
+        }
+    }
+    fn parse_proc_params(self: *Self) !std.ArrayList(Ast.Expression) {
+        var params = std.ArrayList(Ast.Expression).init(self.allocator);
+        _ = try self.expect(.ParenOpen, null);
+        const token_kind = self.tokens.peek(0).?.kind;
+        if (token_kind == .ParenClose) {
+            return params;
+        }
+        while (true) {
+            const expr = self.parse_expr();
+            params.append(expr);
+            const next = self.tokens.peek(0).?;
+            switch (next.kind) {
+                .Comma => {
+                    self.tokens.advance(1);
+                    continue;
+                },
+                .ParenClose => break,
+                else => {
+                    self.tokens.peek(0).?.print_loc();
+                    return Ast.Error.UnexpectedToken;
+                },
+            }
+        }
+    }
+
+    fn parse_expr(self: *Self) !Ast.Expression {
+        const token = self.tokens.consume();
+        assert(token != null);
+        switch (token.?.kind) {
+            .Ident => {
+                const next = self.tokens.peek(0);
+                assert(next != null);
+
+                switch (next.?.kind) {
+                    .OpAss, .Semi => {
+                        return .{ .Var = token.?.source };
+                    },
+                    .ParenOpen => {
+                        const param_list = try self.parse_proc_params();
+                        return .{ .Call = .{ .name = token.?.source, .params = param_list } };
+                    },
+                    else => {
+                        return Ast.Error.UnexpectedToken;
+                    },
+                }
+            },
+            .LiteralInt => {
+                //TODO(shahzad): parse bin op
+                return .{ .LiteralInt = token.?.kind.LiteralInt };
+            },
+            else => {
+                std.debug.panic("expression parsing for {} is not implemented!", .{token.?.kind});
+            },
+        }
+    }
+
+    pub fn expect(self: *Self, expected: TokenKind, context: ?[]const u8) !Token {
+        const token = self.tokens.peek(0);
+        assert(token != null);
+
+        if (std.meta.eql(token.?.kind, expected)) {
+            self.tokens.advance(1);
+            return token.?;
+        } else {
+            std.log.debug("expected {s} but got {s}", .{ context orelse expected.to_str(), token.?.kind.to_str() });
+
+            return Ast.Error.UnexpectedToken;
+        }
+    }
+};
