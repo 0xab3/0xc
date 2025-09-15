@@ -3,21 +3,10 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ascii = std.ascii;
 const strings = @import("strings.zig");
+const SourceContext = @import("ast.zig").SourceContext;
 const libc = @cImport({
     @cInclude("stdio.h");
 });
-
-pub const SourceContext = struct {
-    filename: []const u8,
-    file: []const u8,
-    const Self = @This();
-    pub fn init(filename: []const u8, file: []const u8) SourceContext {
-        return .{
-            .filename = filename,
-            .file = file,
-        };
-    }
-};
 
 pub const TokenKind = union(enum) {
     // literals
@@ -49,10 +38,12 @@ pub const TokenKind = union(enum) {
     Arrow: void,
     Semi: void,
     Colon: void,
+    Comma: void,
 
     // keywords
-    ProcDef: void,
+    ProcDecl: void,
     VarDef: void,
+    Mut: void,
 
     If: void,
     Else: void,
@@ -63,38 +54,21 @@ pub const TokenKind = union(enum) {
 
     //end of file
     Eof: void,
+    const Self = @This();
 
     pub fn from_str(tok: []const u8) !struct { usize, TokenKind } {
-        //TODO(shahzad)!: add function to parse float
-        switch (tok[0]) {
-            '(' => {
-                return .{ 1, .ParenOpen };
-            },
-            ')' => {
-                return .{ 1, .ParenClose };
-            },
-            '{' => {
-                return .{ 1, .CurlyOpen };
-            },
-            '}' => {
-                return .{ 1, .CurlyClose };
-            },
-            '-' => {
-                if (tok.len > 1 and tok[1] == '>') {
-                    return .{ 2, .Arrow };
-                }
-                return .{ 1, .OpSub };
-            },
-            '=' => {
-                return .{ 1, .OpAss };
-            },
-            ':' => {
-                return .{ 1, .Colon };
-            },
-            ';' => {
-                return .{ 1, .Semi };
-            },
-            'a'...'z', 'A'...'Z', '_' => {
+        //@TODO(shahzad)!: add function to parse float
+        return switch (tok[0]) {
+            '(' => .{ 1, .ParenOpen },
+            ')' => .{ 1, .ParenClose },
+            '{' => .{ 1, .CurlyOpen },
+            '}' => .{ 1, .CurlyClose },
+            '-' => if (tok.len > 1 and tok[1] == '>') .{ 2, .Arrow } else .{ 1, .OpSub },
+            '=' => .{ 1, .OpAss },
+            ':' => .{ 1, .Colon },
+            ';' => .{ 1, .Semi },
+            ',' => .{ 1, .Comma },
+            'a'...'z', 'A'...'Z', '_' => blk: {
                 var ident_idx: usize = 0;
                 var ident: []const u8 = tok;
                 while (ident_idx < ident.len) {
@@ -105,18 +79,19 @@ pub const TokenKind = union(enum) {
                 }
                 ident.len = ident_idx;
                 if (std.mem.eql(u8, ident, "proc")) {
-                    return .{ ident.len, .ProcDef };
+                    break :blk .{ ident.len, .ProcDecl };
                 } else if (std.mem.eql(u8, ident, "let")) {
-                    return .{ ident.len, .VarDef };
+                    break :blk .{ ident.len, .VarDef };
+                } else if (std.mem.eql(u8, ident, "mut")) {
+                    break :blk .{ ident.len, .Mut };
                 } else if (std.mem.eql(u8, ident, "return")) {
-                    return .{ ident.len, .Return };
+                    break :blk .{ ident.len, .Return };
                 }
-
-                return .{ ident.len, .Ident };
+                break :blk .{ ident.len, .Ident };
             },
-            '0'...'9' => {
+            '0'...'9' => blk: {
                 const literal_str_length, const literal = strings.parse_int(tok, 0);
-                return .{ literal_str_length, .{ .LiteralInt = literal } };
+                break :blk .{ literal_str_length, .{ .LiteralInt = literal } };
             },
             '"', '\'' => {
                 @panic("implemtent string literal parsing");
@@ -126,7 +101,42 @@ pub const TokenKind = union(enum) {
                 std.log.err("unidentified token \"{c}\"\n", .{tok[0]});
                 unreachable;
             },
-        }
+        };
+    }
+    pub fn to_str(self: Self) []const u8 {
+        return switch (self) {
+            .LiteralInt => "int_lit",
+            .LiteralString => "string_lit",
+            .LiteralFloat => "float_lit",
+            .Ident => "ident",
+            .OpAdd => "+",
+            .OpSub => "-",
+            .OpMul => "*",
+            .OpDiv => "/",
+            .OpAss => "=",
+            .OpEq => "==",
+            .OpLt => "<",
+            .OpGt => ">",
+            .OpLtEq => "<=",
+            .OpGtEq => ">=",
+            .ParenOpen => "(",
+            .ParenClose => ")",
+            .CurlyOpen => "{",
+            .CurlyClose => "}",
+            .Arrow => "->",
+            .Semi => ";",
+            .Colon => ":",
+            .Comma => ",",
+            .ProcDecl => "proc",
+            .VarDef => "let",
+            .Mut => "mut",
+            .If => "if",
+            .Else => "else",
+            .While => "while",
+            .For => "for",
+            .Return => "return",
+            .Eof => "eof",
+        };
     }
 };
 pub const Token = struct {
@@ -142,7 +152,7 @@ pub const Token = struct {
             .source = source,
         };
     }
-    pub fn print_location(self: Self) void {
+    pub fn print_loc(self: Self) void {
         const current_line = self.line;
         const current_token_start = (self.source.ptr - current_line.ptr);
 
@@ -162,7 +172,7 @@ pub const Lexer = struct {
             .context = context,
         };
     }
-    pub fn parse(self: *Self) !void {
+    pub fn tokenize(self: *Self) !void {
         var program: []const u8 = self.context.file;
         var current_line: []const u8 = strings.get_line(program);
 
@@ -178,7 +188,7 @@ pub const Lexer = struct {
             }
 
             if (program[0] == '\r' or program[0] == '\n') {
-                //TODO(shahzad): this fks up multiple new lines
+                // @TODO(shahzad): this fks up multiple new lines
                 program = std.mem.trimLeft(u8, program, "\r\n");
                 current_line = strings.get_line(program);
                 continue;
@@ -188,7 +198,7 @@ pub const Lexer = struct {
             const consumed_length, const token_kind = TokenKind.from_str(program) catch |err| {
                 switch (err) {
                     error.InvalidCharacter => {
-                        //TODO(shahazd): better squigly line error reporting shit
+                        // @TODO(shahazd): better squigly line error reporting shit
                         std.debug.print("error: failed to parse token: \"{s}\"\n", .{current_line});
                         _ = libc.printf("error:%*s^\n", 25 + (current_token_start), "");
                         return;
