@@ -41,16 +41,32 @@ fn get_size_for_type(@"type": []const u8) Self.Error!u16 {
     }
     return Error.TypeNotFound;
 }
+pub fn get_size_of_int_literal(int_literal: u64) u16 {
+    const n_bits: u64 = std.math.log2(int_literal) + 1;
+    const n_bytes: u16 = std.math.divCeil(u16, @intCast(n_bits), 8) catch unreachable;
+    assert(n_bytes <= 8);
+    return if ((n_bytes & n_bytes - 1) == 0) n_bytes else @as(u16, @intCast(1)) << @intCast(std.math.log2(n_bytes) + 1);
+}
+fn get_unsigned_int_for_size(size: u16) Self.Error![]const u8 {
+    for (PrimitiveTypes) |it| {
+        if (it[0][0] == 'x' and it[1] == size) {
+            return it[0];
+        }
+    }
+    return Error.TypeNotFound;
+}
+
 pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
     const params = proc_decl.get_required_params();
-    // const n_total_params_provided = proc_decl.args_list.items.len - proc_decl.args_list.items.len;
+    const n_lines, _ = self.context.get_loc(proc_call.name);
     if (params.items.len > proc_call.params.items.len) {
-        const n_lines, _ = self.context.get_loc(proc_call.name);
         std.log.err("{s}:{}:{}: too few arguments to procedure '{s}' expected {}, have {}", .{ self.context.filename, n_lines, 0, proc_call.name, params.items.len, proc_call.params.items.len });
         return false;
+    } else if (params.items.len < proc_call.params.items.len) {
+        std.log.debug("@TODO(shahzad): {s}:{}:{}: procedure call '{s}' contains more arguments than required! implement named args!!!!", .{ self.context.filename, n_lines, 0, proc_call.name });
     }
     for (params.items, 0..) |param, idx| {
-        self.type_check_expr(module, procedure, &proc_call.params.items[idx], param.decl.type) catch return false;
+        _ = self.type_check_expr(module, procedure, &proc_call.params.items[idx], param.decl.type) catch return false;
     }
     return true;
 }
@@ -74,7 +90,7 @@ pub fn can_type_resolve(concrete: ?[]const u8, abstract: ?[]const u8) bool {
     return false;
 }
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
-pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expression: *const Ast.Expression, can_resolve_to_type: ?[]const u8) !void {
+pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expression: *const Ast.Expression, can_resolve_to_type: ?[]const u8) ![]const u8 {
     //@TODO(shahzad): this is ass brother please fix it
     switch (expression.*) {
         .Var => |expr_as_var| {
@@ -98,23 +114,50 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 self.context.print_loc(expr_as_var);
                 return Error.TypeMisMatch;
             }
+            return variable.?.decl.type.?;
         },
         .Call => |*expr_as_call| {
             const proc_decl = module.get_proc(expr_as_call.name);
             if (proc_decl == null) {
                 const n_lines, _ = self.context.get_loc(expr_as_call.name);
 
-                std.log.err("{s}:{}:{}: use of undefined procedure '{}'", .{ self.context.filename, n_lines, 0, expr_as_call });
+                std.log.err("{s}:{}:{}: use of undefined procedure '{s}'", .{ self.context.filename, n_lines, 0, expr_as_call.name });
                 self.context.print_loc(expr_as_call.name);
                 return Error.ProcedureNotDefined;
             }
             if (!self.type_check_proc_args(module, procedure, expr_as_call, &proc_decl.?)) {
                 return Error.ProcedureCallArgsMismatch;
             }
+            return proc_decl.?.return_type;
         },
-        .NoOp => {},
-        else => {
-            std.log.debug("type_check_expr for type '{}' is not implemented!", .{expression.*});
+        .NoOp => {
+            // @TODO(shahzad)!!!!!: this smells bad
+            return "";
+        },
+        .LiteralInt => |expr_as_lit_int| {
+            // @TODO(shahzad): add something  in the literal int source to we can get the loc of it
+
+            const n_bits: u64 = std.math.log2(expr_as_lit_int) + 1;
+            const lit_int_type_size = get_size_of_int_literal(expr_as_lit_int);
+
+            // @NOTE(shahzad)!: Literal int is by default unsigned
+            const lit_int_type = try get_unsigned_int_for_size(lit_int_type_size);
+
+            // @TODO(shahzad): check if the type can represent the integer in bits
+            assert(can_resolve_to_type != null);
+            if (!can_type_resolve(can_resolve_to_type, lit_int_type)) {
+                std.log.err("{s}:{}:{}: literal `{}` requires {} bits while the underlying type '{s}' can only contain {} bits", .{
+                    self.context.filename,
+                    0,
+                    0,
+                    expr_as_lit_int,
+                    n_bits,
+                    can_resolve_to_type.?,
+                    try get_size_for_type(can_resolve_to_type.?) * 8,
+                });
+                return Error.TypeMisMatch;
+            }
+            return lit_int_type;
         },
     }
 }
@@ -141,8 +184,8 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             unreachable; // @NOTE(shahzad): this is ONLY for static variables inside proc def
         },
         .Assign => |stmt_assign| {
-            try self.type_check_expr(module, procedure, &stmt_assign.lhs, null);
-            try self.type_check_expr(module, procedure, &stmt_assign.rhs, null);
+            const asignee_type = try self.type_check_expr(module, procedure, &stmt_assign.lhs, null);
+            _ = try self.type_check_expr(module, procedure, &stmt_assign.rhs, asignee_type);
         },
         .Return => |stmt_return| {
             if (!std.mem.eql(u8, procedure.decl.return_type, "void")) {
@@ -156,7 +199,7 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 }
             }
             if (stmt_return.expr != null) {
-                try self.type_check_expr(
+                _ = try self.type_check_expr(
                     module,
                     procedure,
                     &stmt_return.expr.?,
