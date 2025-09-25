@@ -1,0 +1,24 @@
+proc putchar(char: x32) -> void;
+proc write_hello() -> void {
+  let x: x32;
+  putchar(72);
+  putchar(101);
+  putchar(108);
+  putchar(108);
+  putchar(111);
+  putchar(32);
+  putchar(87);
+  putchar(111);
+  putchar(114);
+  putchar(108);
+  putchar(100);
+  putchar(10);
+  return;
+}
+
+
+proc main() -> x32 {
+  let y:x32;
+  write_hello(y);
+  return y;
+}
