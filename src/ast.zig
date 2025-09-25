@@ -164,7 +164,7 @@ pub const SourceContext = struct {
 
         assert(@intFromPtr(source.ptr) >= @intFromPtr(start_ptr.ptr) and source.len <= start_ptr.len);
         const buf = start_ptr[0 .. source.ptr - start_ptr.ptr];
-        var count: u32 = 0;
+        var count: u32 = 1;
         for (buf) |val| {
             switch (val) {
                 '\r', '\n' => {
