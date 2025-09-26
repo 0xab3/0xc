@@ -11,7 +11,7 @@ pub const Module = struct {
     context: SourceContext,
     proc_decls: std.ArrayList(ProcDecl),
     proc_defs: std.ArrayList(ProcDef),
-    has_main_func: bool = false, // cries in alignment :sob:
+    has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
         self.* = .{ .allocator = allocator, .proc_defs = .init(allocator), .proc_decls = .init(allocator), .context = context };
@@ -106,7 +106,7 @@ pub const Argument = struct { // @TODO(shahzad): do we really need this? Aren't 
 
     // todo(shahzad): bruh there is too much unknown
     // should this shit contain offset?
-    // how does function args get passed *on stack?
+    // how does procedure args get passed *on stack?
 
     const Self = @This();
     pub fn init(self: *Self, name: []const u8, size: u31, @"type": ?[]const u8, is_mutable: bool) void {

@@ -133,7 +133,7 @@ pub fn compile_data_section(self: *Self) !void {
 
 pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
     try self.program_builder.append_fmt("section .text\n", .{});
-    if (module.has_main_func) {
+    if (module.has_main_proc) {
         try self.program_builder.append_fmt("global main\n", .{});
         // @NOTE(shahzad): we linking with crt so we don't care much about anything for now
     }

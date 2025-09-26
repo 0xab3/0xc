@@ -57,6 +57,7 @@ fn get_unsigned_int_for_size(size: u16) Self.Error![]const u8 {
 }
 
 pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
+    // @TODO(shahzad): better error reporting
     const params = proc_decl.get_required_params();
     const n_lines, _ = self.context.get_loc(proc_call.name);
     if (params.items.len > proc_call.params.items.len) {

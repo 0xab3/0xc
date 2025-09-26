@@ -44,7 +44,7 @@ pub const Parser = struct {
     }
     pub fn parse(self: *Self, source_context: Ast.SourceContext) !Ast.Module {
         var module: Ast.Module = undefined;
-        var has_main_function: bool = false;
+        var has_main_procedure: bool = false;
 
         module.init(self.allocator, source_context);
         while (self.tokens.peek(0).?.kind != .Eof) {
@@ -53,7 +53,7 @@ pub const Parser = struct {
                 .ProcDecl => {
                     const proc_decl = try self.parse_proc(&module);
                     if (std.mem.eql(u8, proc_decl.name, "main")) {
-                        has_main_function = true;
+                        has_main_procedure = true;
                     }
                 },
                 .VarDef => { // global variable
@@ -71,7 +71,7 @@ pub const Parser = struct {
         }
         assert(self.tokens.peek(0).?.kind == .Eof);
 
-        module.has_main_func = has_main_function;
+        module.has_main_proc = has_main_procedure;
         return module;
     }
     // parse the procedure and return only the declaration for some use
@@ -222,17 +222,11 @@ pub const Parser = struct {
                         return .{ .Assign = .{ .lhs = lhs, .rhs = rhs } };
                     },
                     .Call => {
-                        const params = try self.parse_proc_params();
-                        var as_proc_call = lhs;
-                        as_proc_call.Call.params = params;
-                        // @FIXME(shahzad): this makes it so we can not do field access of struct pointers return by functions
-                        // i.e. 'proc foo() -> ^bar;   foo().bar = 69;'
-                        _ = self.expect(.Semi, "';'") catch |err| {
-                            std.log.err("@FIXME(shahzad): this makes it so we can not do field access of struct pointers return by functions", .{});
-                            std.log.err("i.e. 'proc foo() -> ^bar;   foo().bar = 69;'", .{});
+                        _ = self.expect(.Semi, null) catch |err| {
+                            self.tokens.peek(0).?.print_loc();
                             return err;
                         };
-                        return .{ .Assign = .{ .lhs = .NoOp, .rhs = as_proc_call } };
+                        return .{ .Assign = .{ .lhs = .NoOp, .rhs = lhs } };
                     },
                     else => {
                         std.debug.panic("parse_statement only implemented for variable assignment and call!", .{});
@@ -285,6 +279,7 @@ pub const Parser = struct {
 
     fn parse_expr(self: *Self) anyerror!Ast.Expression {
         const token = self.tokens.consume();
+        var expr: Ast.Expression = undefined;
         assert(token != null);
         switch (token.?.kind) {
             .Ident => {
@@ -293,10 +288,11 @@ pub const Parser = struct {
 
                 switch (next.?.kind) {
                     .OpAss, .Comma, .Semi, .ParenClose => {
-                        return .{ .Var = token.?.source };
+                        expr = .{ .Var = token.?.source };
                     },
                     .ParenOpen => {
-                        return .{ .Call = .{ .name = token.?.source, .params = undefined } };
+                        const params = try self.parse_proc_params();
+                        expr = .{ .Call = .{ .name = token.?.source, .params = params } };
                     },
                     else => {
                         return Ast.Error.UnexpectedToken;
@@ -305,13 +301,14 @@ pub const Parser = struct {
             },
             .LiteralInt => {
                 // @TODO(shahzad): parse bin op
-                return .{ .LiteralInt = token.?.kind.LiteralInt };
+                expr = .{ .LiteralInt = token.?.kind.LiteralInt };
             },
             else => {
                 token.?.print_loc();
                 std.debug.panic("expression parsing for {} is not implemented!", .{token.?.kind});
             },
         }
+        return expr;
     }
 
     pub fn expect(self: *Self, expected: TokenKind, context: ?[]const u8) !Token {
