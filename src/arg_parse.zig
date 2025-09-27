@@ -2,6 +2,7 @@ const std = @import("std");
 
 input_filename: []const u8 = undefined,
 output_filename: []const u8 = undefined,
+object_only: bool = false,
 const Self = @This();
 pub fn init(self: *Self) void {
     self.* = .{};
@@ -24,6 +25,8 @@ pub fn populate(self: *Self) void {
             const name = iter.next();
             _output_filename = name.?;
             is_file_flag = true;
+        } else if (std.mem.eql(u8, flag.?, "-c")) {
+            self.object_only = true;
         }
         flag = iter.next();
     }

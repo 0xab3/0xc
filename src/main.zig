@@ -11,11 +11,12 @@ const SourceContext = @import("ast.zig").SourceContext;
 const TypeCheck = @import("./type_check.zig");
 const CodeGen = @import("./codegen/x64_nasm_linux.zig");
 
-pub fn build_asm_file(file_path: []const u8, out_path: []const u8) void {
+pub fn build_asm_file(file_path: []const u8, out_path: []const u8, is_object_only: bool) void {
     var cmd: nob.Cmd = nob.Cmd{};
     const obj_filename = nob.temp_sprintf("%s.o", file_path.ptr);
-    nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "nasm", "-f", "elf64", file_path.ptr, "-o", obj_filename });
+    nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "nasm", "-f", "elf64", file_path.ptr, "-o", if (is_object_only) out_path.ptr else obj_filename });
     _ = nob.cmd_run_opt(&cmd, .{});
+    if (is_object_only) return;
     nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "gcc", "-g", obj_filename, "-o", out_path.ptr });
     _ = nob.cmd_run_opt(&cmd, .{});
 }
@@ -48,7 +49,6 @@ pub fn main() !void {
         std.log.debug("Error Occured {}", .{err});
         return;
     };
-
     var code_gen = CodeGen.init(allocator);
     try code_gen.compile_mod(&module);
 
@@ -57,5 +57,5 @@ pub fn main() !void {
 
     try io.write_entire_file(asm_filename, code_gen.program_builder.string.items);
 
-    build_asm_file(asm_filename, args.output_filename);
+    build_asm_file(asm_filename, args.output_filename, args.object_only);
 }
