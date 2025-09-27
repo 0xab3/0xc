@@ -117,6 +117,12 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             }
             return variable.?.decl.type.?;
         },
+        .Assign => |stmt_assign| {
+            const asignee_type = try self.type_check_expr(module, procedure, stmt_assign.lhs, null);
+            _ = try self.type_check_expr(module, procedure, stmt_assign.rhs, asignee_type);
+            return "";
+        },
+
         .Call => |*expr_as_call| {
             const proc_decl = module.get_proc(expr_as_call.name);
             if (proc_decl == null) {
@@ -131,7 +137,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             }
             return proc_decl.?.return_type;
         },
-        .NoOp => {
+        .NoOp, .Tuple => {
             // @TODO(shahzad)!!!!!: this smells bad
             return "";
         },
@@ -183,10 +189,10 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
         },
         .VarDefGlobal, .VarDefGlobalMut => {
             unreachable; // @NOTE(shahzad): this is ONLY for static variables inside proc def
+
         },
-        .Assign => |stmt_assign| {
-            const asignee_type = try self.type_check_expr(module, procedure, &stmt_assign.lhs, null);
-            _ = try self.type_check_expr(module, procedure, &stmt_assign.rhs, asignee_type);
+        .Expr => |*stmt_expr| {
+            _ = try self.type_check_expr(module, procedure, stmt_expr, null);
         },
         .Return => |stmt_return| {
             if (!std.mem.eql(u8, procedure.decl.return_type, "void")) {

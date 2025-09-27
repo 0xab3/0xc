@@ -48,27 +48,22 @@ pub const Module = struct {
 // @TODO(shahzad): add source here so we can do error reporting
 pub const Expression = union(enum) {
     pub const ProcCall = struct { name: []const u8, params: std.ArrayList(Expression) };
+    pub const Assignment = struct { lhs: *Expression, rhs: *Expression };
     NoOp: void,
     Var: []const u8,
     LiteralInt: u64, // this should go away
     Call: ProcCall,
+    Tuple: std.ArrayList(Expression),
+    Assign: Assignment,
 };
 
 // @TODO(shahzad): add source in every field here so we can do error reporting
 pub const Statement = union(enum) {
-    pub const Assignment = struct {
-        lhs: Expression,
-        rhs: Expression,
-        const Self = @This();
-        pub fn init(self: *Self, lhs: Expression, rhs: Expression) void {
-            self.* = .{ .lhs = lhs, .rhs = rhs };
-        }
-    };
     VarDefStack: VarDecl,
     VarDefStackMut: VarDecl,
     VarDefGlobal: []u8,
     VarDefGlobalMut: []u8,
-    Assign: Assignment,
+    Expr: Expression,
     Return: struct {
         expr: ?Expression,
     },

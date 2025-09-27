@@ -74,16 +74,21 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
                 if (std.mem.eql(u8, call_expr.name, "putchar")) {} else {}
             }
         },
+        // @TODO(shahzad): figure out what to do with this shit
+        .Tuple => {},
+        .Assign => |*expr_assign| {
+            try self.compile_expr_assign(module, procedure, expr_assign);
+        },
     }
     return "";
 }
-pub fn compile_stmt_assign(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, statement: *const Ast.Statement.Assignment) !void {
-    _ = try self.compile_expr(module, procedure, &statement.rhs);
-    _ = try self.compile_expr(module, procedure, &statement.lhs);
+pub fn compile_expr_assign(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expr: *const Ast.Expression.Assignment) anyerror!void {
+    _ = try self.compile_expr(module, procedure, expr.rhs);
+    _ = try self.compile_expr(module, procedure, expr.lhs);
 
-    switch (statement.lhs) {
+    switch (expr.lhs.*) {
         .Var => {
-            const stack_var = procedure.get_variable(statement.lhs.Var);
+            const stack_var = procedure.get_variable(expr.lhs.Var);
             const stack_var_size = stack_var.?.meta.size;
             switch (stack_var_size) {
                 4 => {
@@ -95,14 +100,15 @@ pub fn compile_stmt_assign(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
         .Call => unreachable, // ?
         .LiteralInt => unreachable,
         .NoOp => {},
+        else => unreachable,
     }
 }
 
 pub fn compile_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, statement: *Ast.Statement) !void {
     switch (statement.*) {
         .VarDefStack, .VarDefStackMut => {},
-        .Assign => |*stmt_assign| {
-            try self.compile_stmt_assign(module, procedure, stmt_assign);
+        .Expr => |*stmt_as_expr| {
+            _ = try self.compile_expr(module, procedure, stmt_as_expr);
         },
         else => {},
     }

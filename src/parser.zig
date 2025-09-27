@@ -210,28 +210,18 @@ pub const Parser = struct {
             .Ident => {
                 // @TODO(shahzad): implement correct parsing of assignments, i.e. Literals shouldn't get assigned
                 const lhs = try self.parse_expr();
+                _ = self.expect(.Semi, null) catch |err| {
+                    self.tokens.peek(0).?.print_loc();
+                    return err;
+                };
                 switch (lhs) {
-                    .Var => {
-                        _ = try self.expect(.OpAss, null); // you can't write a variable and do no op on it
-                        const rhs = try self.parse_expr();
-
-                        _ = self.expect(.Semi, null) catch |err| {
-                            self.tokens.peek(0).?.print_loc();
-                            return err;
-                        };
-                        return .{ .Assign = .{ .lhs = lhs, .rhs = rhs } };
-                    },
-                    .Call => {
-                        _ = self.expect(.Semi, null) catch |err| {
-                            self.tokens.peek(0).?.print_loc();
-                            return err;
-                        };
-                        return .{ .Assign = .{ .lhs = .NoOp, .rhs = lhs } };
-                    },
+                    .Assign, .Call => {},
                     else => {
                         std.debug.panic("parse_statement only implemented for variable assignment and call!", .{});
                     },
                 }
+
+                return .{ .Expr = lhs };
             },
             .Return => {
                 self.tokens.advance(1);
@@ -247,7 +237,7 @@ pub const Parser = struct {
             },
         }
     }
-    fn parse_proc_params(self: *Self) !std.ArrayList(Ast.Expression) {
+    fn parse_tuple(self: *Self) !std.ArrayList(Ast.Expression) {
         var params = std.ArrayList(Ast.Expression).init(self.allocator);
         _ = try self.expect(.ParenOpen, null);
         const token_kind = self.tokens.peek(0).?.kind;
@@ -278,36 +268,52 @@ pub const Parser = struct {
     }
 
     fn parse_expr(self: *Self) anyerror!Ast.Expression {
-        const token = self.tokens.consume();
+        const token = self.tokens.peek(0);
         var expr: Ast.Expression = undefined;
         assert(token != null);
         switch (token.?.kind) {
             .Ident => {
-                const next = self.tokens.peek(0);
-                assert(next != null);
+                expr = .{ .Var = token.?.source };
+                self.tokens.advance(1); // skip the previous token
 
-                switch (next.?.kind) {
-                    .OpAss, .Comma, .Semi, .ParenClose => {
-                        expr = .{ .Var = token.?.source };
+                var next_parsed = try self.parse_expr();
+                switch (next_parsed) {
+                    .Tuple => |params| expr = .{ .Call = .{ .name = token.?.source, .params = params } },
+                    .Assign => {
+                        const lhs = try self.allocator.create(Ast.Expression);
+                        lhs.* = expr;
+                        next_parsed.Assign.lhs = lhs;
+                        expr = next_parsed;
                     },
-                    .ParenOpen => {
-                        const params = try self.parse_proc_params();
-                        expr = .{ .Call = .{ .name = token.?.source, .params = params } };
-                    },
-                    else => {
-                        return Ast.Error.UnexpectedToken;
-                    },
+                    .NoOp => {},
+                    .Var, .LiteralInt, .Call => unreachable,
                 }
             },
+            .ParenOpen => {
+                const tuple = try self.parse_tuple(); // we don't skip the token here as it is '('
+                expr = .{ .Tuple = tuple };
+            },
             .LiteralInt => {
+                self.tokens.advance(1); // skip the token
                 // @TODO(shahzad): parse bin op
                 expr = .{ .LiteralInt = token.?.kind.LiteralInt };
             },
+            .OpAss => {
+                self.tokens.advance(1); // skip the token
+                const rhs = try self.allocator.create(Ast.Expression);
+                rhs.* = try self.parse_expr();
+                expr = .{ .Assign = .{ .lhs = undefined, .rhs = rhs } };
+            },
+            .Semi, .ParenClose => {
+                expr = .NoOp;
+            },
             else => {
+                self.tokens.advance(1); // skip the token
                 token.?.print_loc();
                 std.debug.panic("expression parsing for {} is not implemented!", .{token.?.kind});
             },
         }
+
         return expr;
     }
 
