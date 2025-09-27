@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 
 const Ast = @import("ast.zig");
 const Token = @import("lexer.zig").Token;
+const BinOps = @import("lexer.zig").BinOp;
 const TokenKind = @import("lexer.zig").TokenKind;
 
 pub fn Peekable(T: type) type { // oop ahh :sob:
@@ -215,7 +216,7 @@ pub const Parser = struct {
                     return err;
                 };
                 switch (lhs) {
-                    .Assign, .Call => {},
+                    .BinOp, .Call => {},
                     else => {
                         std.debug.panic("parse_statement only implemented for variable assignment and call!", .{});
                     },
@@ -266,27 +267,63 @@ pub const Parser = struct {
         }
         return params;
     }
+    // @NOTE(shahzad): parser doesn't give a shit about precedence  which is not good 
+    // if we have expression x + 43 = 34 + 35;
+    // it will generate the below ast
+    //
+    //     +
+    //    /\
+    //  x   =
+    //      /\
+    //    43  +
+    //        /\
+    //      34  35
+
+    // but we need need
+    //       =
+    //      / \
+    //     /   \
+    //   +      +
+    //  /\      /\
+    // x  43   34  35
+    //
+    // @TODO(shahzad): make it so this respect precedence
 
     fn parse_expr(self: *Self) anyerror!Ast.Expression {
-        const token = self.tokens.peek(0);
         var expr: Ast.Expression = undefined;
+        const lhs_expr = try self.parse_unit_expr();
+
+        const token = self.tokens.peek(0);
+
+        switch (token.?.kind) {
+            .Op => |kind| {
+                self.tokens.advance(1); // skip the token
+                const rhs_expr = try self.parse_expr();
+                expr = .{ .BinOp = try Ast.BinaryOperation.init(self.allocator, kind, lhs_expr, rhs_expr) };
+            },
+            .ParenClose, .Semi, .Comma => {
+                expr = lhs_expr;
+            },
+            else => {
+                std.log.err("parse_expr for token kind {} is not implemented!\n", .{token.?.kind});
+                unreachable;
+            },
+        }
+        return expr;
+    }
+    fn parse_unit_expr(self: *Self) anyerror!Ast.Expression {
+        var expr: Ast.Expression = undefined;
+        const token = self.tokens.peek(0);
         assert(token != null);
         switch (token.?.kind) {
             .Ident => {
                 expr = .{ .Var = token.?.source };
                 self.tokens.advance(1); // skip the previous token
 
-                var next_parsed = try self.parse_expr();
-                switch (next_parsed) {
-                    .Tuple => |params| expr = .{ .Call = .{ .name = token.?.source, .params = params } },
-                    .Assign => {
-                        const lhs = try self.allocator.create(Ast.Expression);
-                        lhs.* = expr;
-                        next_parsed.Assign.lhs = lhs;
-                        expr = next_parsed;
-                    },
-                    .NoOp => {},
-                    .Var, .LiteralInt, .Call => unreachable,
+                if (std.meta.eql(self.tokens.peek(0).?.kind, .ParenOpen)) {
+                    const next_parsed = try self.parse_expr();
+                    const params = next_parsed.Tuple; // if there is paren open then it has to be tuple
+                    expr = .{ .Call = .{ .name = token.?.source, .params = params } };
                 }
             },
             .ParenOpen => {
@@ -295,18 +332,12 @@ pub const Parser = struct {
             },
             .LiteralInt => {
                 self.tokens.advance(1); // skip the token
-                // @TODO(shahzad): parse bin op
                 expr = .{ .LiteralInt = token.?.kind.LiteralInt };
             },
-            .OpAss => {
-                self.tokens.advance(1); // skip the token
-                const rhs = try self.allocator.create(Ast.Expression);
-                rhs.* = try self.parse_expr();
-                expr = .{ .Assign = .{ .lhs = undefined, .rhs = rhs } };
-            },
-            .Semi, .ParenClose => {
-                expr = .NoOp;
-            },
+            // @TODO(shahzad): i don't think we need this anymore
+            // .Semi, .ParenClose => {
+            //     expr = .NoOp;
+            // },
             else => {
                 self.tokens.advance(1); // skip the token
                 token.?.print_loc();

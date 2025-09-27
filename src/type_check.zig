@@ -117,13 +117,37 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             }
             return variable.?.decl.type.?;
         },
-        .Assign => |stmt_assign| {
-            const asignee_type = try self.type_check_expr(module, procedure, stmt_assign.lhs, null);
-            _ = try self.type_check_expr(module, procedure, stmt_assign.rhs, asignee_type);
-            return "";
+        .BinOp => |expr_as_bin_op| {
+            // @NOTE(shahzad)!!: PRECEDENCE IS REQUIRED FOR TYPE CHECKING TO PROPERLY WORK!!!!
+            const expr = expr_as_bin_op.expr;
+            const asignee_type = try self.type_check_expr(module, procedure, expr.lhs, null);
+            std.debug.print("lhs type is {s}\n", .{asignee_type});
+            const asigner_type = try self.type_check_expr(module, procedure, expr.rhs, asignee_type);
+            std.debug.print("rhs type is {s}\n", .{asigner_type});
+
+            const return_type =
+                if (try get_size_for_type(asignee_type) > try get_size_for_type(asigner_type))
+                    asignee_type
+                else
+                    asigner_type;
+            std.debug.print("BinOP returning {s}\n", .{return_type});
+
+            if (!can_type_resolve(can_resolve_to_type, return_type)) {
+                std.log.err("{s}:{}:{}: cannot cast expression '{}' of type '{s}' to type '{s}'", .{
+                    self.context.filename,
+                    0,
+                    0,
+                    expr_as_bin_op,
+                    return_type,
+                    can_resolve_to_type orelse "(unknown)",
+                });
+                return Error.TypeMisMatch;
+            }
+            return return_type;
         },
 
         .Call => |*expr_as_call| {
+            // @TODO(shahzad): check if the return statement matches with the proc_decl.return_type
             const proc_decl = module.get_proc(expr_as_call.name);
             if (proc_decl == null) {
                 const n_lines, _ = self.context.get_loc(expr_as_call.name);
@@ -143,6 +167,8 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
         },
         .LiteralInt => |expr_as_lit_int| {
             // @TODO(shahzad): add something  in the literal int source to we can get the loc of it
+            // @TODO(shahzad)!!: add comptime overflow checks on maths ops
+            // @TODO(shahzad)!: add run time overflow checks on maths ops
 
             const n_bits: u64 = std.math.log2(expr_as_lit_int) + 1;
             const lit_int_type_size = get_size_of_int_literal(expr_as_lit_int);
@@ -150,18 +176,10 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             // @NOTE(shahzad)!: Literal int is by default unsigned
             const lit_int_type = try get_unsigned_int_for_size(lit_int_type_size);
 
-            // @TODO(shahzad): check if the type can represent the integer in bits
-            assert(can_resolve_to_type != null);
+            // assert(can_resolve_to_type != null);
+            if (can_resolve_to_type == null) return lit_int_type;
             if (!can_type_resolve(can_resolve_to_type, lit_int_type)) {
-                std.log.err("{s}:{}:{}: literal `{}` requires {} bits while the underlying type '{s}' can only contain {} bits", .{
-                    self.context.filename,
-                    0,
-                    0,
-                    expr_as_lit_int,
-                    n_bits,
-                    can_resolve_to_type.?,
-                    try get_size_for_type(can_resolve_to_type.?) * 8,
-                });
+                std.log.err("{s}:{}:{}: literal `{}` requires {} bits while the underlying type '{s}' can only contain {} bits", .{ self.context.filename, 0, 0, expr_as_lit_int, n_bits, can_resolve_to_type.?, try get_size_for_type(can_resolve_to_type.?) * 8 });
                 return Error.TypeMisMatch;
             }
             return lit_int_type;

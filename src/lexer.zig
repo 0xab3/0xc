@@ -8,6 +8,9 @@ const libc = @cImport({
     @cInclude("stdio.h");
 });
 
+// @TODO(shahzad): this should be a common thingy
+pub const BinOp = enum { Ass, Add, Sub, Mul, Div };
+
 pub const TokenKind = union(enum) {
     // literals
     LiteralInt: u64, // we don't care about bigInts
@@ -17,13 +20,13 @@ pub const TokenKind = union(enum) {
     //identifier
     Ident,
 
-    //maths
-    OpAdd: void,
-    OpSub: void,
-    OpMul: void,
-    OpDiv: void,
+    Op: BinOp,
 
-    OpAss: void,
+    OpAddAss: void,
+    OpSubAss: void,
+    OpMulAss: void,
+    OpDivAss: void,
+
     OpEq: void,
     OpLt: void,
     OpGt: void,
@@ -63,11 +66,28 @@ pub const TokenKind = union(enum) {
             ')' => .{ 1, .ParenClose },
             '{' => .{ 1, .CurlyOpen },
             '}' => .{ 1, .CurlyClose },
-            '-' => if (tok.len > 1 and tok[1] == '>') .{ 2, .Arrow } else .{ 1, .OpSub },
-            '=' => .{ 1, .OpAss },
+            '=' => .{ 1, .{ .Op = .Ass } },
             ':' => .{ 1, .Colon },
             ';' => .{ 1, .Semi },
             ',' => .{ 1, .Comma },
+
+            '-' => blk: {
+                if (tok.len > 1) {
+                    switch (tok[1]) {
+                        '>' => break :blk .{ 2, .Arrow },
+                        '=' => break :blk .{ 2, .OpSubAss },
+                        else => {
+                            std.log.err("unidentified token \"{s}\"\n", .{tok[1..]});
+                            break :blk .{ 1, .{ .Op = .Sub } };
+                        },
+                    }
+                } else break :blk .{ 1, .{ .Op = .Sub } };
+            },
+
+            '+' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpAddAss } else .{ 1, .{ .Op = .Add } },
+            '*' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpMulAss } else .{ 1, .{ .Op = .Mul } },
+            '/' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpDivAss } else .{ 1, .{ .Op = .Div } },
+
             'a'...'z', 'A'...'Z', '_' => blk: {
                 var ident_idx: usize = 0;
                 var ident: []const u8 = tok;
@@ -109,11 +129,18 @@ pub const TokenKind = union(enum) {
             .LiteralString => "string_lit",
             .LiteralFloat => "float_lit",
             .Ident => "ident",
-            .OpAdd => "+",
-            .OpSub => "-",
-            .OpMul => "*",
-            .OpDiv => "/",
-            .OpAss => "=",
+            .Op => |op| blk: switch (op) {
+                .Add => break :blk "+",
+                .Sub => break :blk "-",
+                .Mul => break :blk "*",
+                .Div => break :blk "/",
+                .Ass => break :blk "=",
+            },
+            .OpAddAss => "+=",
+            .OpSubAss => "-=",
+            .OpMulAss => "*=",
+            .OpDivAss => "/=",
+
             .OpEq => "==",
             .OpLt => "<",
             .OpGt => ">",

@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const strings = @import("./strings.zig");
 
+const BinOp = @import("lexer.zig").BinOp;
+
 pub const Error = error{UnexpectedToken};
 
 pub const Module = struct {
@@ -44,17 +46,28 @@ pub const Module = struct {
         return proc_decl;
     }
 };
-
+pub const BinaryOperation = struct {
+    pub const ExprTreeNode = struct { lhs: *Expression, rhs: *Expression };
+    op: BinOp,
+    expr: ExprTreeNode,
+    const Self = @This();
+    pub fn init(allocator: Allocator, op_type: BinOp, lhs_expr: Expression, rhs_expr: Expression) !Self {
+        const lhs = try allocator.create(Expression);
+        const rhs = try allocator.create(Expression);
+        lhs.* = lhs_expr;
+        rhs.* = rhs_expr;
+        return .{ .op = op_type, .expr = .{ .lhs = lhs, .rhs = rhs } };
+    }
+};
 // @TODO(shahzad): add source here so we can do error reporting
 pub const Expression = union(enum) {
     pub const ProcCall = struct { name: []const u8, params: std.ArrayList(Expression) };
-    pub const Assignment = struct { lhs: *Expression, rhs: *Expression };
     NoOp: void,
     Var: []const u8,
     LiteralInt: u64, // this should go away
     Call: ProcCall,
     Tuple: std.ArrayList(Expression),
-    Assign: Assignment,
+    BinOp: BinaryOperation,
 };
 
 // @TODO(shahzad): add source in every field here so we can do error reporting
