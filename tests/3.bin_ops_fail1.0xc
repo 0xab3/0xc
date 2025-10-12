@@ -1,0 +1,5 @@
+proc main() -> void {
+  let x: x8;
+  let y: x16;
+  y = x + 7575;
+}

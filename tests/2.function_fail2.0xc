@@ -1,0 +1,8 @@
+proc write_hello(x: x32) -> void {
+}
+
+proc main() -> x32 {
+  let ret: x32;
+  write_hello(4294967296);
+  return ret;
+}
