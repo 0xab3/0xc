@@ -1,12 +1,15 @@
 const std = @import("std");
 const debug = std.debug;
 
-pub usingnamespace @cImport({
+const nob_c = @cImport({
     @cDefine("NOB_STRIP_PREFIX", "");
     @cInclude("./nob.h");
 });
 
 const self = @This();
+pub const Cmd = nob_c.Cmd;
+pub const cmd_run_opt = nob_c.cmd_run_opt;
+pub const temp_sprintf = nob_c.temp_sprintf;
 
 // we don't even need this tbh
 fn is_valid_da(da: anytype) void {
@@ -30,13 +33,13 @@ pub fn da_reserve(da: anytype, expected_capacity: usize) void {
 
     if ((expected_capacity) > da.capacity) {
         if ((da).capacity == 0) {
-            (da).capacity = self.NOB_DA_INIT_CAP;
+            (da).capacity = nob_c.NOB_DA_INIT_CAP;
         }
         while ((expected_capacity) > (da).capacity) {
             (da).capacity *= 2;
         }
 
-        (da).items = @ptrCast(@alignCast(self.NOB_REALLOC(@ptrCast(da.items), (da).capacity * @sizeOf(@TypeOf(da.items)))));
+        (da).items = @ptrCast(@alignCast(nob_c.NOB_REALLOC(@ptrCast(da.items), (da).capacity * @sizeOf(@TypeOf(da.items)))));
 
         std.debug.assert(da.items != null);
     }

@@ -2,6 +2,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ascii = std.ascii;
+
+const ArrayListManaged = std.array_list.Managed;
+
 const strings = @import("strings.zig");
 const SourceContext = @import("ast.zig").SourceContext;
 const libc = @cImport({
@@ -189,13 +192,13 @@ pub const Token = struct {
 };
 
 pub const Lexer = struct {
-    tokens: std.ArrayList(Token),
+    tokens: ArrayListManaged(Token),
     context: SourceContext,
 
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
         self.* = .{
-            .tokens = std.ArrayList(Token).init(allocator),
+            .tokens = ArrayListManaged(Token).init(allocator),
             .context = context,
         };
     }

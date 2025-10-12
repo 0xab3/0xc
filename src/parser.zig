@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const ArrayListManaged = std.array_list.Managed;
 
 const Ast = @import("ast.zig");
 const Token = @import("lexer.zig").Token;
@@ -132,8 +133,8 @@ pub const Parser = struct {
         return arg_def;
     }
 
-    fn parse_proc_args(self: *Self) !std.ArrayList(Ast.Argument) {
-        var param_defs = std.ArrayList(Ast.Argument).init(self.allocator);
+    fn parse_proc_args(self: *Self) !ArrayListManaged(Ast.Argument) {
+        var param_defs = ArrayListManaged(Ast.Argument).init(self.allocator);
         _ = try self.expect(.ParenOpen, null);
         while (self.tokens.peek(0).?.kind != .ParenClose) {
             const arg = try self.parse_arg();
@@ -158,10 +159,10 @@ pub const Parser = struct {
         return param_defs;
     }
 
-    fn parse_block(self: *Self) !std.ArrayList(Ast.Statement) {
+    fn parse_block(self: *Self) !ArrayListManaged(Ast.Statement) {
         _ = try self.expect(.CurlyOpen, null);
 
-        var statements = std.ArrayList(Ast.Statement).init(self.allocator);
+        var statements = ArrayListManaged(Ast.Statement).init(self.allocator);
         errdefer statements.deinit();
 
         while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
@@ -238,8 +239,8 @@ pub const Parser = struct {
             },
         }
     }
-    fn parse_tuple(self: *Self) !std.ArrayList(Ast.Expression) {
-        var params = std.ArrayList(Ast.Expression).init(self.allocator);
+    fn parse_tuple(self: *Self) !ArrayListManaged(Ast.Expression) {
+        var params = ArrayListManaged(Ast.Expression).init(self.allocator);
         _ = try self.expect(.ParenOpen, null);
         const token_kind = self.tokens.peek(0).?.kind;
         if (token_kind == .ParenClose) {
@@ -267,7 +268,7 @@ pub const Parser = struct {
         }
         return params;
     }
-    // @NOTE(shahzad): parser doesn't give a shit about precedence  which is not good 
+    // @NOTE(shahzad): parser doesn't give a shit about precedence  which is not good
     // if we have expression x + 43 = 34 + 35;
     // it will generate the below ast
     //

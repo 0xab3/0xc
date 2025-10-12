@@ -2,17 +2,17 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const ArrayListManaged = std.array_list.Managed;
+
 const strings = @import("./strings.zig");
-
 const BinOp = @import("lexer.zig").BinOp;
-
 pub const Error = error{UnexpectedToken};
 
 pub const Module = struct {
     allocator: Allocator,
     context: SourceContext,
-    proc_decls: std.ArrayList(ProcDecl),
-    proc_defs: std.ArrayList(ProcDef),
+    proc_decls: ArrayListManaged(ProcDecl),
+    proc_defs: ArrayListManaged(ProcDef),
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
@@ -47,26 +47,26 @@ pub const Module = struct {
     }
 };
 pub const BinaryOperation = struct {
-    pub const ExprTreeNode = struct { lhs: *Expression, rhs: *Expression };
     op: BinOp,
-    expr: ExprTreeNode,
+    lhs: *Expression,
+    rhs: *Expression,
     const Self = @This();
     pub fn init(allocator: Allocator, op_type: BinOp, lhs_expr: Expression, rhs_expr: Expression) !Self {
         const lhs = try allocator.create(Expression);
         const rhs = try allocator.create(Expression);
         lhs.* = lhs_expr;
         rhs.* = rhs_expr;
-        return .{ .op = op_type, .expr = .{ .lhs = lhs, .rhs = rhs } };
+        return .{ .op = op_type, .lhs = lhs, .rhs = rhs };
     }
 };
 // @TODO(shahzad): add source here so we can do error reporting
 pub const Expression = union(enum) {
-    pub const ProcCall = struct { name: []const u8, params: std.ArrayList(Expression) };
+    pub const ProcCall = struct { name: []const u8, params: ArrayListManaged(Expression) };
     NoOp: void,
     Var: []const u8,
     LiteralInt: u64, // this should go away
     Call: ProcCall,
-    Tuple: std.ArrayList(Expression),
+    Tuple: ArrayListManaged(Expression),
     BinOp: BinaryOperation,
 };
 
@@ -123,13 +123,13 @@ pub const Argument = struct { // @TODO(shahzad): do we really need this? Aren't 
 };
 pub const ProcDecl = struct {
     name: []const u8,
-    args_list: std.ArrayList(Argument),
+    args_list: ArrayListManaged(Argument),
     return_type: []const u8, // concrete type?
     const Self = @This();
-    pub fn init(name: []const u8, args: std.ArrayList(Argument), return_type: []const u8) Self {
+    pub fn init(name: []const u8, args: ArrayListManaged(Argument), return_type: []const u8) Self {
         return .{ .name = name, .args_list = args, .return_type = return_type };
     }
-    pub fn get_required_params(self: *const Self) std.ArrayList(Argument) {
+    pub fn get_required_params(self: *const Self) ArrayListManaged(Argument) {
         // @TODO(shahzad): impl this function frfr
         return self.args_list;
     }
@@ -138,11 +138,11 @@ pub const ProcDecl = struct {
 pub const ProcDef = struct {
     decl: ProcDecl,
     total_stack_var_offset: usize = 0,
-    stack_vars: std.ArrayList(StackVar), // populated in type checking phase
-    block: std.ArrayList(Statement),
+    stack_vars: ArrayListManaged(StackVar), // populated in type checking phase
+    block: ArrayListManaged(Statement),
     const Self = @This();
 
-    pub fn init(allocator: Allocator, decl: ProcDecl, block: std.ArrayList(Statement)) Self {
+    pub fn init(allocator: Allocator, decl: ProcDecl, block: ArrayListManaged(Statement)) Self {
         return .{ .decl = decl, .stack_vars = .init(allocator), .block = block };
     }
     pub fn get_variable(self: *Self, var_name: []const u8) ?StackVar {
