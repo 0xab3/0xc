@@ -10,6 +10,7 @@ pub const CompiledExpression = union(enum) {
 
     Var: CompiledExprStack,
     LitInt: CompiledExprStack,
+    LitStr: CompiledExprStack,
     Register: CompiledExpCommon,
     Call: CompiledExpCommon,
 };

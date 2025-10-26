@@ -229,6 +229,12 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             // }
             // return return_type;
         },
+        .LiteralString => |str_lit| {
+            try module.string_literals.append(.{ .string = str_lit, .label = undefined });
+
+            return "x64"; // hack
+
+        },
 
         .Call => |*expr_as_call| {
             // @TODO(shahzad): check if the return statement matches with the proc_decl.return_type

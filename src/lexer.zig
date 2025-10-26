@@ -17,7 +17,7 @@ pub const BinOp = enum { Ass, Add, Sub, Mul, Div };
 pub const TokenKind = union(enum) {
     // literals
     LiteralInt: u64, // we don't care about bigInts
-    LiteralString,
+    LiteralString: []const u8,
     LiteralFloat: f64,
 
     //identifier
@@ -116,8 +116,9 @@ pub const TokenKind = union(enum) {
                 const literal_str_length, const literal = strings.parse_int(tok, 0);
                 break :blk .{ literal_str_length, .{ .LiteralInt = literal } };
             },
-            '"', '\'' => {
-                @panic("implemtent string literal parsing");
+            '"', '\'' => blk: {
+                const literal = try strings.parse_string_literal(tok);
+                break :blk .{ literal.len, .{ .LiteralString = literal } };
             },
 
             else => {
@@ -227,13 +228,11 @@ pub const Lexer = struct {
 
             const consumed_length, const token_kind = TokenKind.from_str(program) catch |err| {
                 switch (err) {
-                    error.InvalidCharacter => {
+                    else => {
+
                         // @TODO(shahazd): better squigly line error reporting shit
                         std.debug.print("error: failed to parse token: \"{s}\"\n", .{current_line});
                         _ = libc.printf("error:%*s^\n", 25 + (current_token_start), "");
-                        return;
-                    },
-                    else => {
                         return err;
                     },
                 }

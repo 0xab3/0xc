@@ -8,15 +8,21 @@ const strings = @import("./strings.zig");
 const BinOp = @import("lexer.zig").BinOp;
 pub const Error = error{UnexpectedToken};
 
+pub const StringLiteral = struct {
+    string: []const u8,
+    label: []const u8,
+};
 pub const Module = struct {
     allocator: Allocator,
     context: SourceContext,
+    // i could use a hashmap but no
+    string_literals: ArrayListManaged(StringLiteral),
     proc_decls: ArrayListManaged(ProcDecl),
     proc_defs: ArrayListManaged(ProcDef),
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
-        self.* = .{ .allocator = allocator, .proc_defs = .init(allocator), .proc_decls = .init(allocator), .context = context };
+        self.* = .{ .allocator = allocator, .proc_defs = .init(allocator), .proc_decls = .init(allocator), .context = context, .string_literals = .init(allocator) };
     }
     pub fn get_proc_decl(self: *Self, name: []const u8) ?ProcDecl {
         for (self.proc_decls.items) |proc_decl| {
@@ -45,6 +51,14 @@ pub const Module = struct {
         }
         return proc_decl;
     }
+    pub fn find_string_literal(self: *Self, literal: []const u8) ?StringLiteral {
+        for (self.string_literals.items) |it| {
+            if (it.string.ptr == literal.ptr) {
+                return it;
+            }
+        }
+        unreachable;
+    }
 };
 pub const BinaryOperation = struct {
     op: BinOp,
@@ -65,6 +79,7 @@ pub const Expression = union(enum) {
     NoOp: void,
     Var: []const u8,
     LiteralInt: u64, // this should go away
+    LiteralString: []const u8,
     Call: ProcCall,
     Tuple: ArrayListManaged(Expression),
     BinOp: BinaryOperation,

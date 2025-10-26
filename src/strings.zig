@@ -2,6 +2,12 @@
 //
 
 const std = @import("std");
+const Error = error{
+    NonAlphaNumericCharacter,
+    UnTerminatedEscape,
+    UnTerminatedStringLiteral,
+    UnKnownEscapeCode,
+};
 const ascii = std.ascii;
 pub fn split_once(buffer: *[]u8, delim: u8) []u8 {
     for (buffer, 0..) |elem, i| {
@@ -36,5 +42,36 @@ pub fn parse_int(buffer: []const u8, comptime base: u8) struct { usize, u64 } {
 
         idx += 1;
     }
-    return .{idx, literal};
+    return .{ idx, literal };
+}
+
+pub fn parse_string_literal(buffer: []const u8) ![]const u8 {
+    const start_quote = buffer[0];
+    var lit_end_idx: isize = -1;
+    for (1..buffer.len) |idx| {
+        if (buffer[idx] == start_quote) {
+            lit_end_idx = @intCast(idx);
+            lit_end_idx += 1;
+            break;
+        }
+        if (buffer[idx] == '\n' or buffer[idx] == '\r') {
+            return Error.UnTerminatedStringLiteral;
+        }
+
+        if (!ascii.isAlphanumeric(buffer[idx]) and
+            !ascii.isWhitespace(buffer[idx]) and
+            buffer[idx] != '\\') return Error.NonAlphaNumericCharacter;
+        if (buffer[idx] == '\\') {
+            if (idx + 1 >= buffer.len) return Error.UnTerminatedEscape;
+            switch (buffer[idx + 1]) {
+                'n', 't', 'r', '\\', 'x' => {},
+                else => return Error.UnKnownEscapeCode,
+            }
+        }
+    }
+
+    if (lit_end_idx == -1) {
+        return Error.UnTerminatedStringLiteral;
+    }
+    return buffer[0..@intCast(lit_end_idx)];
 }

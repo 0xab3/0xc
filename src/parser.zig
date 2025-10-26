@@ -62,6 +62,11 @@ pub const Parser = struct {
                     std.log.err("global variables are not supported!", .{});
                     self.tokens.peek(0).?.print_loc();
                 },
+                .Ident => {
+                    std.log.err("unidentified identifier!", .{});
+                    self.tokens.peek(0).?.print_loc();
+                    return error.UnexpectedToken;
+            },
                 .Eof => {
                     unreachable;
                 },
@@ -334,6 +339,10 @@ pub const Parser = struct {
             .LiteralInt => {
                 self.tokens.advance(1); // skip the token
                 expr = .{ .LiteralInt = token.?.kind.LiteralInt };
+            },
+            .LiteralString => |str| {
+                self.tokens.advance(1); // skip the token
+                expr = .{ .LiteralString = str };
             },
             // @TODO(shahzad): i don't think we need this anymore
             // .Semi, .ParenClose => {

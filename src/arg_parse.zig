@@ -15,7 +15,7 @@ pub fn init(self: *Self) void {
     };
 }
 pub fn help() void {
-    std.log.debug("USAGE: 0xcc -i file", .{});
+    std.log.debug("USAGE: boom -i file", .{});
 }
 
 pub fn populate(self: *Self) !void {

@@ -8,10 +8,12 @@ const CompiledExpression = common.CompiledExpression;
 
 program_builder: StringBuilder,
 scratch_buffer: StringBuilder,
+string_arena: StringBuilder,
 const Self = @This();
 
 pub fn init(allocator: Allocator) Self {
-    return .{ .program_builder = .init(allocator), .scratch_buffer = .init(allocator) };
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    return .{ .program_builder = .init(allocator), .scratch_buffer = .init(allocator), .string_arena = .init(arena.allocator()) };
 }
 fn get_size_identifier_based_on_size(size: u32) []const u8 {
     return switch (size) {
@@ -74,6 +76,16 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             _ = try self.program_builder.append_fmt("   mov {s} [rbp-{}], {}\n", .{ size_ident, procedure.total_stack_var_offset, expr_as_int_lit });
             return .{ .LitInt = .{ .offset = procedure.total_stack_var_offset, .size = int_lit_size } };
         },
+        .LiteralString => |lit| {
+            const str_lit = module.find_string_literal(lit);
+            procedure.total_stack_var_offset += 8;
+            _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{8});
+
+            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{str_lit.?.label});
+            _ = try self.program_builder.append_fmt("   mov {s} [rbp-{}], rax\n", .{ "QWORD", procedure.total_stack_var_offset });
+
+            return .{ .LitStr = .{ .offset = procedure.total_stack_var_offset, .size = 8 } };
+        },
         .NoOp => {},
         .Var => |expr_as_var| {
             const stack_var = procedure.get_variable(expr_as_var);
@@ -92,6 +104,9 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
                     },
                     .Register, .Call => |compiled_expr| {
                         _ = try self.program_builder.append_fmt("   mov rdi, {s}\n", .{compiled_expr.expr});
+                    },
+                    .LitStr => |compiled_expr| {
+                        _ = try self.program_builder.append_fmt("   mov rdi, [rbp - {}]\n", .{compiled_expr.offset});
                     },
                 }
 
@@ -152,6 +167,9 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                 .Register, .Call => |expr| {
                     lhs_compiled = try scratch_buffer.append_fmt("{s}", .{expr.expr});
                 },
+                .LitStr => {
+                    unreachable;
+                },
             }
 
             switch (rhs) {
@@ -165,6 +183,9 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                 .Register, .Call => |expr| {
                     rhs_compiled = try scratch_buffer.append_fmt("{s}", .{expr.expr});
                     ret = .{ .Register = .{ .expr = expr.expr, .size = expr.size } };
+                },
+                .LitStr => {
+                    unreachable;
                 },
             }
             _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
@@ -201,12 +222,19 @@ fn compile_proc_ending(self: *Self, procedure: *Ast.ProcDef) !void {
     _ = try self.program_builder.append_fmt("   xor rax, rax\n", .{});
     _ = try self.program_builder.append_fmt("   ret\n", .{});
 }
-pub fn compile_data_section(self: *Self) !void {
-    _ = self;
-    @panic("unimplemented!");
+pub fn compile_data_section(self: *Self, module: *Ast.Module) !void {
+    var label_no: usize = 0;
+    _ = try self.program_builder.append_fmt("section .rodata\n", .{});
+    for (module.string_literals.items) |*str_lit| {
+        str_lit.label = try self.string_arena.append_fmt("LD{d:0>2}", .{label_no});
+        _ = try self.program_builder.append_fmt("{s}:\n", .{str_lit.label});
+        _ = try self.program_builder.append_fmt("db {s}, 0\n", .{str_lit.string});
+        label_no += 1;
+    }
 }
 
 pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
+    try self.compile_data_section(module);
     _ = try self.program_builder.append_fmt("section .text\n", .{});
     if (module.has_main_proc) {
         _ = try self.program_builder.append_fmt("global main\n", .{});
@@ -222,26 +250,4 @@ pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
     std.debug.print("--------------------------------------------------\n", .{});
     std.debug.print("{s}\n", .{self.program_builder.string.items});
     std.debug.print("--------------------------------------------------\n", .{});
-}
-
-pub fn load_stack_variable(self: *Self, reg: []const u8, procedure: *Ast.ProcDef, var_as_expr: *Ast.Expression) void {
-    const stack_var = procedure.get_variable(var_as_expr.Var);
-    const stack_var_size = stack_var.?.meta.size;
-    switch (stack_var_size) {
-        4, 8 => {
-            _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ reg, stack_var.?.offset });
-        },
-        else => unreachable,
-    }
-}
-
-pub fn store_stack_variable(self: *Self, reg: []const u8, procedure: *Ast.ProcDef, var_as_expr: *Ast.Expression) void {
-    const stack_var = procedure.get_variable(var_as_expr.Var);
-    const stack_var_size = stack_var.?.meta.size;
-    switch (stack_var_size) {
-        4 => {
-            _ = try self.program_builder.append_fmt("   mov [rbp - {}], {s}\n", .{ stack_var.?.offset, reg });
-        },
-        else => unreachable,
-    }
 }
