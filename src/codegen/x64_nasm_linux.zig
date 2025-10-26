@@ -33,22 +33,20 @@ fn _get_size_of_register(reg: []const u8) u16 {
     };
 }
 const LinuxCallingConvRegisters = [_][]const u8{
-    "rdi",
-    "rsi",
-    "rdx",
-    "rcx",
-    "r8",
-    "r9",
+    "edi", "rdi",
+    "esi", "rsi",
+    "edx", "rdx",
+    "ecx", "rcx",
+    "r8d", "r8",
+    "r9d", "r9",
 };
 
-pub fn get_callcov_arg_register(self: *Self, idx: usize) []const u8 {
+pub fn get_callcov_arg_register(self: *Self, idx: usize, size: u32) []const u8 {
     _ = self;
     if (idx < LinuxCallingConvRegisters.len) {
-        return LinuxCallingConvRegisters[idx];
+        return LinuxCallingConvRegisters[(idx * 2) + (size / 8)];
     }
-    // we don't support pushing args on stack
     unreachable;
-    // self.scratch_buffer.print_fmt("[rsp - { }]", .{});
 }
 
 //register should be a,b,c,d
@@ -83,7 +81,7 @@ pub fn get_size_of_int_literal(int_literal: u64) u32 {
 pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expr: *const Ast.Expression) !CompiledExpression {
     switch (expr.*) {
         .LiteralInt => |expr_as_int_lit| {
-            const int_lit_size: u32 = if (get_size_of_int_literal(expr_as_int_lit) < 4) 4 else 8;
+            const int_lit_size: u32 = if (get_size_of_int_literal(expr_as_int_lit) <= 4) 4 else 8;
 
             // @TODO(shahzad): use the size identifier
             const size_ident = get_size_identifier_based_on_size(int_lit_size);
@@ -115,16 +113,19 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             // @TODO(shahzad)!!!!!: we don't support any function with arity more than one
 
             for (call_expr.params.items, 0..) |param_expr, idx| {
-                const register = self.get_callcov_arg_register(idx);
                 const expr_compiled_to_reg = try self.compile_expr(module, procedure, &param_expr);
+
                 switch (expr_compiled_to_reg) {
                     .Var, .LitInt => |compiled_expr| {
+                        const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
                     },
                     .Register, .Call => |compiled_expr| {
+                        const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ register, compiled_expr.expr });
                     },
                     .LitStr => |compiled_expr| {
+                        const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
                     },
                 }
@@ -179,7 +180,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
         .Add => {
             switch (lhs) {
                 .Var, .LitInt => |expr| {
-                    const register_size: u32 = if (expr.size < 4) 4 else 8;
+                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("a", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
                     lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
@@ -195,7 +196,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
 
             switch (rhs) {
                 .Var, .LitInt => |expr| {
-                    const register_size: u32 = if (expr.size < 4) 4 else 8;
+                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("d", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});

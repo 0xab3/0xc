@@ -336,7 +336,7 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 std.log.debug("user defined types are not supported!", .{});
                 return err;
             };
-            stack_variable_offset += if (size < 4) 4 else 8;
+            stack_variable_offset += if (size <= 4) 4 else 8;
             var stack_var: Ast.StackVar = undefined;
             stack_var.init(var_def.name, stack_variable_offset, size, var_def.type, statement.* == .VarDefStackMut);
 
