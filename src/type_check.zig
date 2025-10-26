@@ -345,16 +345,35 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
     }
     procedure.total_stack_var_offset = stack_variable_offset;
 }
+pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
+    var err = false;
+    for (0..proc_decl.args_list.items.len) |idx| {
+        for (idx..proc_decl.args_list.items.len) |idx2| {
+            const arg = &proc_decl.args_list.items[idx];
+            const arg2 = &proc_decl.args_list.items[idx2];
+            if (arg != arg2 and std.mem.eql(u8, arg.*.decl.name, arg2.*.decl.name)) {
+                std.debug.print("{s} {*} \n", .{arg.*.decl.name, arg.*.decl.name});
+
+                const n_lines, const line = self.context.get_loc(arg.*.decl.name);
+                std.log.err("{s}:{}:{}: redeclaration of argument '{s}'", .{ self.context.filename, n_lines, 0, arg.*.decl.name });
+                std.log.debug("{s}:{}: {s}", .{ self.context.filename, n_lines, line });
+
+                std.log.err("first declared here", .{});
+                self.context.print_loc(arg2.*.decl.name);
+                err = true;
+            }
+        }
+    }
+    return err;
+}
 pub fn type_check_proc_decl(self: *Self, proc_decl: *Ast.ProcDecl) !void {
-    _ = self;
-    _ = proc_decl;
+    if (self.type_check_argument_list(proc_decl)) return Error.VariableRedefinition;
 }
 // @TODO(shahzad): typecheck proc calls
 pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
     // @TODO(shahzad): type check declarations only
     for (module.proc_decls.items) |*proc_decl| {
-        std.log.debug("args list of proc decl {s}", .{proc_decl.name});
-        std.log.debug("{f}", .{std.json.fmt(proc_decl.args_list.items, .{})});
+        try self.type_check_proc_decl(proc_decl);
     }
     for (module.proc_defs.items) |*proc| {
         std.log.debug("args list of proc def {s}", .{proc.decl.name});
