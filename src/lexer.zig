@@ -118,7 +118,7 @@ pub const TokenKind = union(enum) {
             },
             '"', '\'' => blk: {
                 const literal = try strings.parse_string_literal(tok);
-                break :blk .{ literal.len, .{ .LiteralString = literal } };
+                break :blk .{ literal.len + 1, .{ .LiteralString = literal[0..literal.len - 1] } };
             },
 
             else => {

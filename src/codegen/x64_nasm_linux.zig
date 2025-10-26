@@ -289,7 +289,7 @@ pub fn compile_data_section(self: *Self, module: *Ast.Module) !void {
     for (module.string_literals.items) |*str_lit| {
         str_lit.label = try self.string_arena.append_fmt("LD{d:0>2}", .{label_no});
         _ = try self.program_builder.append_fmt("{s}:\n", .{str_lit.label});
-        _ = try self.program_builder.append_fmt("db {s}, 0\n", .{str_lit.string});
+        _ = try self.program_builder.append_fmt("db `{s}`, 0\n", .{str_lit.string});
         label_no += 1;
     }
 }
