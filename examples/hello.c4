@@ -1,0 +1,6 @@
+proc printf(fmt: x64) -> void;
+
+
+proc main() -> void {
+  write_hello("Hello,World!\n");
+}

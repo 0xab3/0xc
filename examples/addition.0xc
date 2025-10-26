@@ -1,5 +1,0 @@
-proc printf(fmt: x64, arg1: x32) -> void; 
-
-proc main() -> void {
-  printf("%d", 100 + 200 + 700);
-}
