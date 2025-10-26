@@ -1,0 +1,5 @@
+proc print_int(int: x32) -> void;
+
+proc main() -> void {
+  print_int(69 + 420 + 420694206420699);
+}

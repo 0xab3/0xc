@@ -1,0 +1,4 @@
+proc puts(ptr: x64) -> void;
+proc main() -> void {
+  puts("ts not tuff gng");
+}
