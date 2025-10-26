@@ -205,6 +205,7 @@ pub const SourceContext = struct {
         const line: []const u8 = blk: {
             var idx = buf.len - 1;
             while (idx >= 0) : (idx -= 1) {
+                if (idx == 0) return strings.get_line(start_ptr[0..]);
                 switch (buf[idx]) {
                     '\r', '\n' => {
                         const line_start_idx = if (idx + 1 < buf.len) idx + 1 else buf.len;
