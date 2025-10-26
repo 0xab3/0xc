@@ -1,17 +1,24 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
+var fixed_buffer: [2048]u8 = undefined;
+var fba = std.heap.FixedBufferAllocator.init(&fixed_buffer);
 input_filename: []const u8 = undefined,
 output_filename: []const u8 = undefined,
+allocator: Allocator = fba.allocator(),
+link_object_filename: std.array_list.Managed([]const u8) = undefined,
 object_only: bool = false,
 const Self = @This();
 pub fn init(self: *Self) void {
-    self.* = .{};
+    self.* = .{
+        .link_object_filename = .init(fba.allocator()),
+    };
 }
 pub fn help() void {
     std.log.debug("USAGE: 0xcc -i file", .{});
 }
 
-pub fn populate(self: *Self) void {
+pub fn populate(self: *Self) !void {
     var iter = std.process.ArgIterator.init();
     var flag = iter.next();
     var is_file_flag = false;
@@ -27,7 +34,14 @@ pub fn populate(self: *Self) void {
             is_file_flag = true;
         } else if (std.mem.eql(u8, flag.?, "-c")) {
             self.object_only = true;
+        } else if (std.mem.eql(u8, flag.?, "-l")) {
+            // TODO(shahzad): only works with relative paths :sob:
+            // TODO(shahzad): this is ass :sob:
+            const name = iter.next();
+            _ = try std.fs.cwd().statFile(name.?);
+            try self.link_object_filename.append(name.?);
         }
+
         flag = iter.next();
     }
     if (is_file_flag == false) {
