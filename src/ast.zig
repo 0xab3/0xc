@@ -100,8 +100,9 @@ pub const Statement = union(enum) {
 pub const VarDecl = struct {
     name: []const u8,
     type: ?[]const u8, // this should be in meta but fuck it
+    expr: Expression,
     pub fn init(name: []const u8, @"type": ?[]const u8) @This() {
-        return .{ .name = name, .type = @"type" };
+        return .{ .name = name, .type = @"type", .expr = .NoOp };
     }
 };
 pub const VarMetaData = struct {

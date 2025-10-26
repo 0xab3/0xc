@@ -66,7 +66,7 @@ pub const Parser = struct {
                     std.log.err("unidentified identifier!", .{});
                     self.tokens.peek(0).?.print_loc();
                     return error.UnexpectedToken;
-            },
+                },
                 .Eof => {
                     unreachable;
                 },
@@ -206,12 +206,22 @@ pub const Parser = struct {
                     type_name = (try self.expect(.Ident, "'type definition'")).source;
                 }
 
+                token = self.tokens.peek(0);
+                assert(token != null);
+                std.debug.print("token {}\n", .{token.?});
+
+                var expr: Ast.Expression = .NoOp;
+                if (std.meta.eql(token.?.kind, .{ .Op = .Ass })) {
+                    self.tokens.advance(1);
+                    expr = try self.parse_expr();
+                }
+
                 // @TODO(shahzad): add support for assignment during initialization of variable
                 _ = try self.expect(.Semi, null);
                 if (is_mut) {
-                    return .{ .VarDefStackMut = .{ .name = var_name, .type = type_name } };
+                    return .{ .VarDefStackMut = .{ .name = var_name, .type = type_name, .expr = expr } };
                 } else {
-                    return .{ .VarDefStack = .{ .name = var_name, .type = type_name } };
+                    return .{ .VarDefStack = .{ .name = var_name, .type = type_name, .expr = expr } };
                 }
             },
             .Ident => {

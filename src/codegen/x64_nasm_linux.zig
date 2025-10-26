@@ -214,12 +214,50 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
             self.scratch_buffer.reset();
             return ret;
         },
+        .Ass => {
+            switch (lhs) {
+                .Var => |expr| {
+                    _ = try self.program_builder.append_fmt("   mov rax, rbp\n", .{});
+                    _ = try self.program_builder.append_fmt("   sub rax, {}\n", .{expr.offset});
+                    lhs_compiled = try self.scratch_buffer.append_fmt("[rax]", .{});
+                    ret = .{ .Register = .{ .expr = "rax", .size = 8 } };
+                },
+                else => unreachable, // we don't give a shit as of now
+            }
+            switch (rhs) {
+                .Var, .LitInt => |expr| {
+                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
+                    const register = _get_regiter_based_on_size("d", register_size);
+                    _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    ret = .{ .Register = .{ .expr = register, .size = register_size } };
+                },
+                .Register, .Call => |expr| {
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
+                },
+                else => unreachable,
+            }
+            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+            self.scratch_buffer.reset();
+            return .{ .Register = .{ .expr = "we don't care abt this shit anymore", .size = 100000 } };
+        },
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }
 }
 pub fn compile_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, statement: *Ast.Statement) !void {
     switch (statement.*) {
-        .VarDefStack, .VarDefStackMut => {},
+        .VarDefStack, .VarDefStackMut => |stmt| {
+            if (!std.meta.eql(stmt.expr, .NoOp)) {
+                var var_as_expr: Ast.Expression = .{ .Var = stmt.name };
+                var rhs_as_expr = stmt.expr;
+                const bin_op_expr: Ast.BinaryOperation = .{
+                    .op = .Ass,
+                    .lhs = &var_as_expr,
+                    .rhs = &rhs_as_expr,
+                };
+                _ = try self.compile_expr_bin_op(module, procedure, &bin_op_expr);
+            }
+        },
         .Expr => |*stmt_as_expr| {
             _ = try self.compile_expr(module, procedure, stmt_as_expr);
         },

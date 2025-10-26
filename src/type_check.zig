@@ -339,6 +339,13 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             stack_variable_offset += if (size <= 4) 4 else 8;
             var stack_var: Ast.StackVar = undefined;
             stack_var.init(var_def.name, stack_variable_offset, size, var_def.type, statement.* == .VarDefStackMut);
+            if (!std.meta.eql(var_def.expr, .NoOp)) {
+                const expr_type = try self.type_check_expr(module, procedure, &var_def.expr);
+                if (!can_type_resolve(var_def.type, expr_type)) {
+                    std.log.err("unable to resolve type {s} to {s}\n", .{ var_def.type orelse "(unknown)", expr_type });
+                    return error.TypeMisMatch;
+                }
+            }
 
             try procedure.stack_vars.append(stack_var);
         }
@@ -376,8 +383,6 @@ pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
         try self.type_check_proc_decl(proc_decl);
     }
     for (module.proc_defs.items) |*proc| {
-        std.log.debug("args list of proc def {s}", .{proc.decl.name});
-        std.log.debug("{f}", .{std.json.fmt(proc.decl.args_list.items, .{})});
         try self.type_check_proc(module, proc);
     }
 }
