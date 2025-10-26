@@ -1,5 +1,5 @@
-proc print_int(int: x32) -> void;
+proc printf(fmt: x64, arg1: x32) -> void; 
 
 proc main() -> void {
-  print_int(69 + 420 + 420694206420699);
+  printf("%d", 100 + 200 + 700);
 }

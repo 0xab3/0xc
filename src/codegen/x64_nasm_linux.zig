@@ -32,6 +32,24 @@ fn _get_size_of_register(reg: []const u8) u16 {
         else => unreachable,
     };
 }
+const LinuxCallingConvRegisters = [_][]const u8{
+    "rdi",
+    "rsi",
+    "rdx",
+    "rcx",
+    "r8",
+    "r9",
+};
+
+pub fn get_callcov_arg_register(self: *Self, idx: usize) []const u8 {
+    _ = self;
+    if (idx < LinuxCallingConvRegisters.len) {
+        return LinuxCallingConvRegisters[idx];
+    }
+    // we don't support pushing args on stack
+    unreachable;
+    // self.scratch_buffer.print_fmt("[rsp - { }]", .{});
+}
 
 //register should be a,b,c,d
 fn _get_regiter_based_on_size(comptime register: []const u8, size: usize) []const u8 {
@@ -73,7 +91,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             procedure.total_stack_var_offset += int_lit_size;
 
             _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{int_lit_size});
-            _ = try self.program_builder.append_fmt("   mov {s} [rbp-{}], {}\n", .{ size_ident, procedure.total_stack_var_offset, expr_as_int_lit });
+            _ = try self.program_builder.append_fmt("   mov {s} [rbp - {}], {}\n", .{ size_ident, procedure.total_stack_var_offset, expr_as_int_lit });
             return .{ .LitInt = .{ .offset = procedure.total_stack_var_offset, .size = int_lit_size } };
         },
         .LiteralString => |lit| {
@@ -82,7 +100,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{8});
 
             _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{str_lit.?.label});
-            _ = try self.program_builder.append_fmt("   mov {s} [rbp-{}], rax\n", .{ "QWORD", procedure.total_stack_var_offset });
+            _ = try self.program_builder.append_fmt("   mov {s} [rbp - {}], rax\n", .{ "QWORD", procedure.total_stack_var_offset });
 
             return .{ .LitStr = .{ .offset = procedure.total_stack_var_offset, .size = 8 } };
         },
@@ -95,34 +113,40 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
         },
         .Call => |call_expr| {
             // @TODO(shahzad)!!!!!: we don't support any function with arity more than one
-            assert(call_expr.params.items.len == 1);
-            for (call_expr.params.items) |param_expr| {
+
+            for (call_expr.params.items, 0..) |param_expr, idx| {
+                const register = self.get_callcov_arg_register(idx);
                 const expr_compiled_to_reg = try self.compile_expr(module, procedure, &param_expr);
                 switch (expr_compiled_to_reg) {
                     .Var, .LitInt => |compiled_expr| {
-                        _ = try self.program_builder.append_fmt("   mov rdi, [rbp - {}]\n", .{compiled_expr.offset});
+                        _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
                     },
                     .Register, .Call => |compiled_expr| {
-                        _ = try self.program_builder.append_fmt("   mov rdi, {s}\n", .{compiled_expr.expr});
+                        _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ register, compiled_expr.expr });
                     },
                     .LitStr => |compiled_expr| {
-                        _ = try self.program_builder.append_fmt("   mov rdi, [rbp - {}]\n", .{compiled_expr.offset});
+                        _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
                     },
                 }
-
-                // @TODO(shahzad): this is a hack cause we can also define our own put char
-                if (module.get_proc_decl(call_expr.name) != null) {
-                    _ = try self.program_builder.append_fmt("   call {s} wrt ..plt\n", .{call_expr.name});
-                } else {
-                    // @NOTE(shahzad): if the proc is not in decl_array that means it is not extern, which means
-                    // that it can only be a defined proc, calling undeclared proc is handled by the parser
-                    assert(module.get_proc_def(call_expr.name) != null);
-
-                    _ = try self.program_builder.append_fmt("   call {s}\n", .{call_expr.name});
-                }
-                return .{ .Call = .{ .expr = "rax", .size = 8 } };
-                // x64 linux c convention specifies that return value should be in rax... we probably will have to change this
             }
+
+            // @TODO(shahzad): this is a hack cause we can also define our own put char
+            if (module.get_proc_decl(call_expr.name) != null) {
+                // c abi expect number of vector register used in rax if a function with
+                // va args is called, we don't support that anyways to just zeroing out rax
+                _ = try self.program_builder.append_fmt("   mov rax, 0\n", .{});
+                _ = try self.program_builder.append_fmt("   call {s} wrt ..plt\n", .{call_expr.name});
+            } else {
+                // @NOTE(shahzad): if the proc is not in decl_array that means it is not extern, which means
+                // that it can only be a defined proc, calling undeclared proc is handled by the parser
+                assert(module.get_proc_def(call_expr.name) != null);
+
+                _ = try self.program_builder.append_fmt("   mov rax, 0\n", .{});
+                _ = try self.program_builder.append_fmt("   call {s}\n", .{call_expr.name});
+            }
+            return .{ .Call = .{ .expr = "rax", .size = 8 } };
+            // x64 linux c convention specifies that return value should be in rax... we probably will have to change this
+
         },
         // @TODO(shahzad): figure out what to do with this shit
         .Tuple => {},
@@ -150,9 +174,6 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
 
     var lhs_compiled: []const u8 = undefined;
     var rhs_compiled: []const u8 = undefined;
-    var temp_buffer: [1024]u8 = undefined;
-    var temp_buffer_alloc = std.heap.FixedBufferAllocator.init(&temp_buffer);
-    var scratch_buffer = StringBuilder.init(temp_buffer_alloc.allocator());
     var ret: CompiledExpression = undefined;
     switch (bin_op.op) {
         .Add => {
@@ -161,11 +182,11 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                     const register_size: u32 = if (expr.size < 4) 4 else 8;
                     const register = _get_regiter_based_on_size("a", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
-                    lhs_compiled = try scratch_buffer.append_fmt("{s}", .{register});
+                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
                 .Register, .Call => |expr| {
-                    lhs_compiled = try scratch_buffer.append_fmt("{s}", .{expr.expr});
+                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
                 },
                 .LitStr => {
                     unreachable;
@@ -177,11 +198,11 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                     const register_size: u32 = if (expr.size < 4) 4 else 8;
                     const register = _get_regiter_based_on_size("d", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
-                    rhs_compiled = try scratch_buffer.append_fmt("{s}", .{register});
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
                 .Register, .Call => |expr| {
-                    rhs_compiled = try scratch_buffer.append_fmt("{s}", .{expr.expr});
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
                     ret = .{ .Register = .{ .expr = expr.expr, .size = expr.size } };
                 },
                 .LitStr => {
@@ -189,6 +210,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                 },
             }
             _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+            self.scratch_buffer.reset();
             return ret;
         },
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
