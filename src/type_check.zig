@@ -16,6 +16,20 @@ const Error = error{
     ProcedureCallArgsMismatch,
     TypeMisMatch,
 };
+//TODO(shahzad): add a formatter here
+const ExprType = struct {
+    type: []const u8,
+    info: union(enum) {
+        PtrDepth: usize,
+        IntLiteral: u64,
+    },
+    pub fn from_var_type(var_type: Ast.VarType, is_int_lit: bool, int_lit: usize) ExprType {
+        if (is_int_lit) {
+            return .{ .type = var_type.type, .info = .{ .IntLiteral = int_lit } };
+        }
+        return .{ .type = var_type.type, .info = .{ .PtrDepth = var_type.ptr_depth } };
+    }
+};
 // NOTE(shahzad): we use this as IntLiteralType ++ int_literal
 const IntLiteralType = "\x00intlit";
 
@@ -31,20 +45,20 @@ const PrimitiveTypes = [_]struct { []const u8, u16 }{
 
     .{ "s64", 8 },
     .{ "x64", 8 },
-    .{ "^", 8 },
 };
 
 pub fn init(allocator: Allocator, context: SourceContext) Self {
     return .{ .context = context, .allocator = allocator };
 }
-fn get_size_for_type(@"type": []const u8) Self.Error!u16 {
+fn get_size_for_type(@"type": ExprType) Self.Error!u16 {
+    if (@"type".info == .PtrDepth and @"type".info.PtrDepth > 0) return 8;
+    if (@"type".info == .IntLiteral) {
+        return @intCast(get_size_of_int_literal(@"type".info.IntLiteral));
+    }
     for (PrimitiveTypes) |it| {
-        if (std.mem.eql(u8, it[0], @"type")) {
+        if (std.mem.eql(u8, it[0], @"type".type)) {
             return it[1];
         }
-    }
-    if (std.mem.startsWith(u8, @"type", IntLiteralType)) {
-        return @intCast(get_size_of_int_literal(extract_int_lit_from_type(@"type")));
     }
     return Error.TypeNotFound;
 }
@@ -54,16 +68,6 @@ pub fn get_size_of_int_literal(int_literal: u64) u32 {
     const n_bytes: u16 = std.math.divCeil(u16, @intCast(n_bits), 8) catch unreachable;
     assert(n_bytes <= 8);
     return if ((n_bytes & n_bytes - 1) == 0) n_bytes else @as(u16, @intCast(1)) << @intCast(std.math.log2(n_bytes) + 1);
-}
-
-// NOTE(shahzad): i hate zig
-pub fn extract_int_lit_from_type(int_lit_type: []const u8) u64 {
-    var extended: []const u8 = undefined;
-    extended.ptr = int_lit_type.ptr;
-    extended.len = int_lit_type.len + 8;
-
-    return std.mem.bytesAsValue(u64, extended[int_lit_type.len..extended.len]).*;
-    // return @bitCast(extended[int_lit_type.len..extended.len]);
 }
 
 fn get_unsigned_int_for_size(size: u16) []const u8 {
@@ -87,78 +91,56 @@ pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.Pr
     }
     for (params.items, 0..) |param, idx| {
         const resolved_type = self.type_check_expr(module, procedure, &proc_call.params.items[idx]) catch {
-            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?, "unimplemented!" });
+            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, "unimplemented!" });
             return false;
         };
 
-        if (!can_type_resolve(param.decl.type, resolved_type)) {
-            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?, resolved_type });
+        const param_expr_type = ExprType.from_var_type(param.decl.type.?, false, 0);
+        if (!can_type_resolve(param_expr_type, resolved_type)) {
+            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, resolved_type.type });
             return false;
         }
     }
     return true;
 }
 
-pub fn can_type_resolve_int_literal(concrete: []const u8, abstract: []const u8) bool {
-    const is_concrete_int_lit = std.mem.startsWith(u8, concrete, IntLiteralType);
-    const is_abstract_int_lit = std.mem.startsWith(u8, abstract, IntLiteralType);
-
-    if (@intFromBool(is_concrete_int_lit) ^ @intFromBool(is_abstract_int_lit) == 1) {
-        if (is_concrete_int_lit) {
-            const concrete_int_lit = extract_int_lit_from_type(concrete);
-            const concrete_int_lit_type = get_size_for_type(get_size_of_int_literal(concrete_int_lit)) catch return false;
-            _ = concrete_int_lit_type;
-        } else if (is_abstract_int_lit) {
-            const abstract_int_lit = extract_int_lit_from_type(abstract);
-            const abstract_int_lit_type = get_size_for_type(get_size_of_int_literal(abstract_int_lit)) catch return false;
-            _ = abstract_int_lit_type;
-        }
-        unreachable;
-    }
-    if (is_concrete_int_lit or is_abstract_int_lit) {
-        return true;
-    }
-    unreachable;
-}
-
-pub fn can_type_resolve(concrete_: ?[]const u8, abstract_: ?[]const u8) bool {
-    const concrete = concrete_;
-    var abstract = abstract_;
-    if (concrete == null and abstract == null) {
+pub fn can_type_resolve(concrete_: ?ExprType, abstract_: ?ExprType) bool {
+    if (concrete_ == null and abstract_ == null) {
         return false;
-    } else if (concrete == null or abstract == null) {
+    } else if (concrete_ == null or abstract_ == null) {
         return true;
     }
-    const is_abstract_int_lit = std.mem.startsWith(u8, abstract.?, IntLiteralType);
-    const is_concrete_int_lit = std.mem.startsWith(u8, concrete.?, IntLiteralType);
+
+    const concrete = concrete_.?.type;
+    var abstract = abstract_.?.type;
+
+    const is_abstract_int_lit = abstract_.?.info == .IntLiteral;
+    const is_concrete_int_lit = concrete_.?.info == .IntLiteral;
+
     if (is_abstract_int_lit and is_concrete_int_lit) {
         return true;
     } else if (is_concrete_int_lit) {
-        return can_type_resolve(abstract, concrete);
+        return can_type_resolve(abstract_, concrete_);
     } else if (is_abstract_int_lit) {
-        const abstract_int_lit = extract_int_lit_from_type(abstract.?);
+        // this means that concrete is not a literal so check if it's a pointer
+        if (concrete_.?.info.PtrDepth > 0) return false; // idk if this is right or nah
+        const abstract_int_lit = abstract_.?.info.IntLiteral;
         const abstract_int_lit_size: u16 = @intCast(get_size_of_int_literal(abstract_int_lit));
         abstract = get_unsigned_int_for_size(abstract_int_lit_size);
-    }
-    // const is_concrete_int_lit = std.mem.startsWith(u8, concrete, IntLiteralType);
-    // if (is_concrete_int_lit or is_abstract_int_lit){
-    // return can_type_resolve_int_literal(concrete.?, abstract.?);
-    // }
-
-    if (std.mem.eql(u8, concrete.?, abstract.?)) {
-        return true;
-    } else if (std.mem.eql(u8, concrete.?, "^") and std.mem.eql(u8, abstract.?, "^")) {
-        return true; // pointers can resolve to any type
-    } else if (std.mem.eql(u8, concrete.?, "^") or std.mem.eql(u8, abstract.?, "^")) {
+    } else if (abstract_.?.info.PtrDepth != concrete_.?.info.PtrDepth) {
         return false;
     }
-    const concrete_size = get_size_for_type(concrete.?) catch return false;
-    const abstract_size = get_size_for_type(abstract.?) catch return false;
-    if (concrete_size >= abstract_size and concrete.?[0] == abstract.?[0]) return true; // don't break signed numbers and only cast to bigger size
+
+    if (std.mem.eql(u8, concrete, abstract)) {
+        return true;
+    }
+    const concrete_size = get_size_for_type(concrete_.?) catch return false;
+    const abstract_size = get_size_for_type(abstract_.?) catch return false;
+    if (concrete_size >= abstract_size and concrete[0] == abstract[0]) return true; // don't break signed numbers and only cast to bigger size
     return false;
 }
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
-pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expression: *const Ast.Expression) ![]const u8 {
+pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expression: *const Ast.Expression) !ExprType {
     //@TODO(shahzad): this is ass brother please fix it
     switch (expression.*) {
         .Var => |expr_as_var| {
@@ -169,40 +151,25 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 self.context.print_loc(expr_as_var);
                 return Error.VariableNotDefined;
             }
-            return variable.?.decl.type.?;
 
-            // @NOTE(shahzad): if we can't resolve the type to given type
-            // if (!can_type_resolve(can_resolve_to_type, variable.?.decl.type)) {
-            //     std.log.err("{s}:{}:{}: cannot cast variable '{s}' of type '{s}' to type '{s}'", .{
-            //         self.context.filename,
-            //         n_lines,
-            //         0,
-            //         expr_as_var,
-            //         variable.?.decl.type orelse "(unknown)",
-            //         can_resolve_to_type orelse "(unknown)",
-            //     });
-            //     self.context.print_loc(expr_as_var);
-            //     return Error.TypeMisMatch;
-            // }
-
+            return .from_var_type(variable.?.decl.type.?, false, 0);
         },
         .BinOp => |expr_as_bin_op| {
             // @NOTE(shahzad)!!: PRECEDENCE IS REQUIRED FOR TYPE CHECKING TO PROPERLY WORK!!!!
             const asignee_type = try self.type_check_expr(module, procedure, expr_as_bin_op.lhs);
-            if (std.mem.startsWith(u8, asignee_type, IntLiteralType)) {
-                const int_lit = extract_int_lit_from_type(asignee_type);
-                std.debug.print("asignee_type {s}, literal: {}\n", .{ asignee_type, int_lit });
-            } else std.debug.print("asignee_type {s}\n", .{asignee_type});
+            if (asignee_type.info == .IntLiteral) {
+                const int_lit = asignee_type.info.IntLiteral;
+                std.debug.print("asignee_type int_literal, literal: {}\n", .{int_lit});
+            } else std.debug.print("asignee_type {}\n", .{asignee_type});
 
             const asigner_type = try self.type_check_expr(module, procedure, expr_as_bin_op.rhs);
-            if (std.mem.startsWith(u8, asigner_type, IntLiteralType)) {
-                const int_lit = extract_int_lit_from_type(asigner_type);
-                std.debug.print("asigner_type {s}, literal: {}\n", .{ asigner_type, int_lit });
-            } else std.debug.print("asigner_type {s}\n", .{asigner_type});
+            if (asignee_type.info == .IntLiteral) {
+                const int_lit = asigner_type.info.IntLiteral;
+                std.debug.print("asigner_type int_literal, literal: {}\n", .{int_lit});
+            } else std.debug.print("asigner_type {}\n", .{asigner_type});
 
-            // if (std.meta.eql(expr_as_bin_op.op, .Ass)) {
             if (!can_type_resolve(asignee_type, asigner_type)) {
-                std.log.err("unable to resolve type {s} to {s}\n", .{ asigner_type, asignee_type });
+                std.log.err("unable to resolve type {} to {}\n", .{ asigner_type, asignee_type });
                 return error.TypeMisMatch;
             }
             const return_type =
@@ -210,29 +177,15 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                     asignee_type
                 else
                     asigner_type;
-            if (std.mem.startsWith(u8, return_type, IntLiteralType)) {
-                const int_lit = extract_int_lit_from_type(asigner_type);
-                std.debug.print("BinOP returning {s} literal: {}\n", .{ return_type, int_lit });
-            } else std.debug.print("BinOP returning {s}\n", .{return_type});
+            if (return_type.info == .IntLiteral) {
+                const int_lit = return_type.info.IntLiteral;
+                std.debug.print("BinOP returning int_literal literal: {}\n", .{int_lit});
+            } else std.debug.print("BinOP returning {}\n", .{return_type});
             return return_type;
-
-            // if (!can_type_resolve(can_resolve_to_type, return_type)) {
-            //     std.log.err("{s}:{}:{}: cannot cast expression '{}' of type '{s}' to type '{s}'", .{
-            //         self.context.filename,
-            //         0,
-            //         0,
-            //         expr_as_bin_op,
-            //         return_type,
-            //         can_resolve_to_type orelse "(unknown)",
-            //     });
-            //     return Error.TypeMisMatch;
-            // }
-            // return return_type;
         },
         .LiteralString => |str_lit| {
             try module.string_literals.append(.{ .string = str_lit, .label = undefined });
-
-            return "x64"; // hack
+            return .{ .type = "x8", .info = .{ .PtrDepth = 1 } }; // hack
 
         },
 
@@ -249,7 +202,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             if (!self.type_check_proc_args(module, procedure, expr_as_call, &proc_decl.?)) {
                 return Error.ProcedureCallArgsMismatch;
             }
-            return proc_decl.?.return_type;
+            return .from_var_type(proc_decl.?.return_type, false, 0);
         },
         .NoOp, .Tuple => {
             // @TODO(shahzad)!!!!!: this smells bad
@@ -263,13 +216,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
 
             // @NOTE(shahzad)!: Literal int is by default unsigned
 
-            const format_required_size = IntLiteralType.len + 8;
-            var buf = try self.allocator.alloc(u8, format_required_size);
-            var expr_as_int_lit_as_u8_slice = expr_as_int_lit;
-            const int_lit_as_slice: []u8 = @ptrCast((&expr_as_int_lit_as_u8_slice)[0..1]);
-            @memcpy(buf[0..IntLiteralType.len], IntLiteralType);
-            @memcpy(buf[IntLiteralType.len..], int_lit_as_slice);
-            return buf[0..IntLiteralType.len];
+            return .{ .type = IntLiteralType, .info = .{ .IntLiteral = expr_as_int_lit } };
         },
         // else => |unhandled| {
         //     std.log.err("type_check_expr is not implemented for {}\n", .{unhandled});
@@ -305,12 +252,12 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             _ = try self.type_check_expr(module, procedure, stmt_expr);
         },
         .Return => |stmt_return| {
-            if (!std.mem.eql(u8, procedure.decl.return_type, "void")) {
+            if (!std.mem.eql(u8, procedure.decl.return_type.type, "void")) {
                 if (stmt_return.expr == null) {
                     std.log.err("@TODO(shahzad): add something in return to get the location!!!", .{});
                     std.log.err("{s}: caller expects '{s}' but procedure '{s}' returns void", .{
                         self.context.filename,
-                        procedure.decl.return_type,
+                        procedure.decl.return_type.type,
                         procedure.decl.name,
                     });
                 }
@@ -332,7 +279,11 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
         try self.type_check_stmt(module, procedure, statement);
         if (statement.* == .VarDefStack or statement.* == .VarDefStackMut) {
             const var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
-            const size = get_size_for_type(var_def.type.?) catch |err| {
+            const as_expr_type: ExprType = .{
+                .type = var_def.type.?.type,
+                .info = .{ .PtrDepth = var_def.type.?.ptr_depth },
+            };
+            const size = get_size_for_type(as_expr_type) catch |err| {
                 std.log.debug("user defined types are not supported!", .{});
                 return err;
             };
@@ -341,8 +292,9 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             stack_var.init(var_def.name, stack_variable_offset, size, var_def.type, statement.* == .VarDefStackMut);
             if (!std.meta.eql(var_def.expr, .NoOp)) {
                 const expr_type = try self.type_check_expr(module, procedure, &var_def.expr);
-                if (!can_type_resolve(var_def.type, expr_type)) {
-                    std.log.err("unable to resolve type {s} to {s}\n", .{ var_def.type orelse "(unknown)", expr_type });
+                const var_def_type_as_expr_type: ExprType = .from_var_type(var_def.type.?, false, 0);
+                if (!can_type_resolve(var_def_type_as_expr_type, expr_type)) {
+                    std.log.err("unable to resolve type {any} to {any}\n", .{ var_def.type , expr_type.type });
                     return error.TypeMisMatch;
                 }
             }
@@ -359,8 +311,6 @@ pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
             const arg = &proc_decl.args_list.items[idx];
             const arg2 = &proc_decl.args_list.items[idx2];
             if (arg != arg2 and std.mem.eql(u8, arg.*.decl.name, arg2.*.decl.name)) {
-                std.debug.print("{s} {*} \n", .{arg.*.decl.name, arg.*.decl.name});
-
                 const n_lines, const line = self.context.get_loc(arg.*.decl.name);
                 std.log.err("{s}:{}:{}: redeclaration of argument '{s}'", .{ self.context.filename, n_lines, 0, arg.*.decl.name });
                 std.log.debug("{s}:{}: {s}", .{ self.context.filename, n_lines, line });

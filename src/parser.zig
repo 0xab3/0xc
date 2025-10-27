@@ -115,8 +115,12 @@ pub const Parser = struct {
 
         const proc_args = try self.parse_proc_args();
         _ = try self.expect(.Arrow, null);
+        var ptr_depth: usize = 0;
+        while (self.tokens.peek(0).?.kind == .Pointer) : (self.tokens.advance(1)) {
+            ptr_depth += 1;
+        }
         const return_type = (try self.expect(.Ident, "'return type'")).source;
-        return .init(proc_name.source, proc_args, return_type);
+        return .init(proc_name.source, proc_args, return_type, ptr_depth);
     }
     fn parse_arg(self: *Self) !Ast.Argument {
         var token = self.tokens.peek(0).?;
@@ -131,10 +135,16 @@ pub const Parser = struct {
         token = try self.expect(.Ident, "variable name");
         const var_name = token.source;
         _ = try self.expect(.Colon, null);
+
+        var ptr_depth: usize = 0;
+        while (self.tokens.peek(0).?.kind == .Pointer) : (self.tokens.advance(1)) {
+            ptr_depth += 1;
+        }
+
         token = try self.expect(.Ident, "type");
         const var_type = token.source;
         var arg_def: Ast.Argument = undefined;
-        arg_def.init(var_name, undefined, var_type, mutable);
+        arg_def.init(var_name, undefined, var_type, ptr_depth, mutable);
         return arg_def;
     }
 
@@ -199,16 +209,22 @@ pub const Parser = struct {
                 token = self.tokens.peek(0);
                 assert(token != null);
 
-                var type_name: ?[]const u8 = null;
+                var var_type: ?Ast.VarType = null;
 
                 if (std.meta.eql(token.?.kind, .Colon)) {
                     self.tokens.advance(1);
-                    type_name = (try self.expect(.Ident, "'type definition'")).source;
+
+                    var ptr_depth: usize = 0;
+
+                    while (self.tokens.peek(0).?.kind == .Pointer) : (self.tokens.advance(1)) {
+                        ptr_depth += 1;
+                    }
+
+                    var_type = .{ .type = (try self.expect(.Ident, "'type definition'")).source, .ptr_depth = ptr_depth };
                 }
 
                 token = self.tokens.peek(0);
                 assert(token != null);
-                std.debug.print("token {}\n", .{token.?});
 
                 var expr: Ast.Expression = .NoOp;
                 if (std.meta.eql(token.?.kind, .{ .Op = .Ass })) {
@@ -219,9 +235,9 @@ pub const Parser = struct {
                 // @TODO(shahzad): add support for assignment during initialization of variable
                 _ = try self.expect(.Semi, null);
                 if (is_mut) {
-                    return .{ .VarDefStackMut = .{ .name = var_name, .type = type_name, .expr = expr } };
+                    return .{ .VarDefStackMut = .{ .name = var_name, .type = var_type, .expr = expr } };
                 } else {
-                    return .{ .VarDefStack = .{ .name = var_name, .type = type_name, .expr = expr } };
+                    return .{ .VarDefStack = .{ .name = var_name, .type = var_type, .expr = expr } };
                 }
             },
             .Ident => {

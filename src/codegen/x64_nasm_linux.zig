@@ -97,7 +97,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             procedure.total_stack_var_offset += 8;
             _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{8});
 
-            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{str_lit.?.label});
+            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{str_lit.label});
             _ = try self.program_builder.append_fmt("   mov {s} [rbp - {}], rax\n", .{ "QWORD", procedure.total_stack_var_offset });
 
             return .{ .LitStr = .{ .offset = procedure.total_stack_var_offset, .size = 8 } };
@@ -225,7 +225,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                 else => unreachable, // we don't give a shit as of now
             }
             switch (rhs) {
-                .Var, .LitInt => |expr| {
+                .Var, .LitInt, .LitStr => |expr| {
                     const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("d", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
@@ -235,7 +235,6 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
                 .Register, .Call => |expr| {
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
                 },
-                else => unreachable,
             }
             _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
             self.scratch_buffer.reset();

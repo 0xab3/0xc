@@ -20,11 +20,11 @@ pub const TokenKind = union(enum) {
     LiteralString: []const u8,
     LiteralFloat: f64,
 
-    //identifier
-    Ident,
-
     Op: BinOp,
 
+    //identifier
+    Ident: void,
+    Pointer: void,
     OpAddAss: void,
     OpSubAss: void,
     OpMulAss: void,
@@ -90,6 +90,7 @@ pub const TokenKind = union(enum) {
             '+' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpAddAss } else .{ 1, .{ .Op = .Add } },
             '*' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpMulAss } else .{ 1, .{ .Op = .Mul } },
             '/' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpDivAss } else .{ 1, .{ .Op = .Div } },
+            '^' => .{ 1,  .Pointer  },
 
             'a'...'z', 'A'...'Z', '_' => blk: {
                 var ident_idx: usize = 0;
@@ -118,7 +119,7 @@ pub const TokenKind = union(enum) {
             },
             '"', '\'' => blk: {
                 const literal = try strings.parse_string_literal(tok);
-                break :blk .{ literal.len + 1, .{ .LiteralString = literal[0..literal.len - 1] } };
+                break :blk .{ literal.len + 1, .{ .LiteralString = literal[0 .. literal.len - 1] } };
             },
 
             else => {
@@ -140,6 +141,7 @@ pub const TokenKind = union(enum) {
                 .Div => break :blk "/",
                 .Ass => break :blk "=",
             },
+            .Pointer => "^",
             .OpAddAss => "+=",
             .OpSubAss => "-=",
             .OpMulAss => "*=",

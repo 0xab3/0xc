@@ -21,7 +21,7 @@ pub fn build_asm_file(file_path: []const u8, out_path: []const u8, is_object_onl
     for (object_files.items) |object_file| {
         nob.da_append([*c]const u8, &cmd, object_file.ptr);
     }
-    nob.da_append_many([*c]const u8, &cmd,  &[_][*c]const u8{"-o",out_path.ptr});
+    nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "-o", out_path.ptr });
     _ = nob.cmd_run_opt(&cmd, .{});
 }
 

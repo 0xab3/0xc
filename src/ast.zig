@@ -51,7 +51,7 @@ pub const Module = struct {
         }
         return proc_decl;
     }
-    pub fn find_string_literal(self: *Self, literal: []const u8) ?StringLiteral {
+    pub fn find_string_literal(self: *Self, literal: []const u8) StringLiteral {
         for (self.string_literals.items) |it| {
             if (it.string.ptr == literal.ptr) {
                 return it;
@@ -97,12 +97,18 @@ pub const Statement = union(enum) {
     },
 };
 
+//TODO(shahzad): add fmt here
+pub const VarType = struct {
+    type: []const u8, // this should be in meta but fuck it
+    ptr_depth: usize, // contains the depth
+};
 pub const VarDecl = struct {
     name: []const u8,
-    type: ?[]const u8, // this should be in meta but fuck it
+    type: ?VarType,
     expr: Expression,
-    pub fn init(name: []const u8, @"type": ?[]const u8) @This() {
-        return .{ .name = name, .type = @"type", .expr = .NoOp };
+
+    pub fn init(name: []const u8, @"type": []const u8, ptr: usize) @This() {
+        return .{ .name = name, .type = .{ .type = @"type", .ptr_depth = ptr }, .expr = .NoOp };
     }
 };
 pub const VarMetaData = struct {
@@ -119,8 +125,8 @@ pub const StackVar = struct {
     offset: u32,
 
     const Self = @This();
-    pub fn init(self: *Self, name: []const u8, offset: u32, size: u31, @"type": ?[]const u8, is_mutable: bool) void {
-        self.* = .{ .decl = .init(name, @"type"), .meta = .init(size, is_mutable), .offset = offset };
+    pub fn init(self: *Self, name: []const u8, offset: u32, size: u31, @"type": ?VarType, is_mutable: bool) void {
+        self.* = .{ .decl = .{ .name = name, .type = @"type", .expr = undefined }, .meta = .init(size, is_mutable), .offset = offset };
     }
 };
 
@@ -133,17 +139,17 @@ pub const Argument = struct { // @TODO(shahzad): do we really need this? Aren't 
     // how does procedure args get passed *on stack?
 
     const Self = @This();
-    pub fn init(self: *Self, name: []const u8, size: u31, @"type": ?[]const u8, is_mutable: bool) void {
-        self.* = .{ .decl = .init(name, @"type"), .meta = .init(size, is_mutable) };
+    pub fn init(self: *Self, name: []const u8, size: u31, @"type": []const u8, ptr: usize, is_mutable: bool) void {
+        self.* = .{ .decl = .init(name, @"type", ptr), .meta = .init(size, is_mutable) };
     }
 };
 pub const ProcDecl = struct {
     name: []const u8,
     args_list: ArrayListManaged(Argument),
-    return_type: []const u8, // concrete type?
+    return_type: VarType, // concrete type?
     const Self = @This();
-    pub fn init(name: []const u8, args: ArrayListManaged(Argument), return_type: []const u8) Self {
-        return .{ .name = name, .args_list = args, .return_type = return_type };
+    pub fn init(name: []const u8, args: ArrayListManaged(Argument), return_type: []const u8, ptr_depth: usize) Self {
+        return .{ .name = name, .args_list = args, .return_type = .{ .type = return_type, .ptr_depth = ptr_depth } };
     }
     pub fn get_required_params(self: *const Self) ArrayListManaged(Argument) {
         // @TODO(shahzad): impl this function frfr
