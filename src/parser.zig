@@ -40,20 +40,20 @@ pub fn Peekable(T: type) type { // oop ahh :sob:
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokens: Peekable([]Token),
+    module: Ast.Module = undefined,
     const Self = @This();
     pub fn init(allocator: std.mem.Allocator, tokens: []Token) Self {
         return .{ .allocator = allocator, .tokens = Peekable([]Token).init(tokens) };
     }
     pub fn parse(self: *Self, source_context: Ast.SourceContext) !Ast.Module {
-        var module: Ast.Module = undefined;
         var has_main_procedure: bool = false;
 
-        module.init(self.allocator, source_context);
+        self.module.init(self.allocator, source_context);
         while (self.tokens.peek(0).?.kind != .Eof) {
             const token: Token = self.tokens.peek(0).?;
             switch (token.kind) {
                 .ProcDecl => {
-                    const proc_decl = try self.parse_proc(&module);
+                    const proc_decl = try self.parse_proc();
                     if (std.mem.eql(u8, proc_decl.name, "main")) {
                         has_main_procedure = true;
                     }
@@ -78,18 +78,18 @@ pub const Parser = struct {
         }
         assert(self.tokens.peek(0).?.kind == .Eof);
 
-        module.has_main_proc = has_main_procedure;
-        return module;
+        self.module.has_main_proc = has_main_procedure;
+        return self.module;
     }
     // parse the procedure and return only the declaration for some use
-    pub fn parse_proc(self: *Self, module: *Ast.Module) !Ast.ProcDecl {
+    pub fn parse_proc(self: *Self) !Ast.ProcDecl {
         const proc_decl = self.parse_proc_decl() catch |err| {
             self.tokens.peek(0).?.print_loc();
             return err;
         };
         switch (self.tokens.peek(0).?.kind) {
             .Semi => {
-                try module.proc_decls.append(proc_decl);
+                try self.module.proc_decls.append(proc_decl);
                 self.tokens.advance(1);
             },
             .CurlyOpen => {
@@ -97,7 +97,7 @@ pub const Parser = struct {
                 // only store it in the ProcDecl array and attach an index to it that specifies
                 // the procDef
                 const code_block = try self.parse_block();
-                try module.proc_defs.append(.init(module.allocator, proc_decl, code_block));
+                try self.module.proc_defs.append(.init(proc_decl, code_block));
             },
             else => {
                 _ = self.expect(.CurlyOpen, "'{' or ';'") catch |err| {
@@ -174,20 +174,25 @@ pub const Parser = struct {
         return param_defs;
     }
 
-    fn parse_block(self: *Self) !ArrayListManaged(Ast.Statement) {
+    fn parse_block(self: *Self) anyerror!*Ast.Block {
         _ = try self.expect(.CurlyOpen, null);
+
+        const block = try self.module.blocks.create(Ast.Block);
 
         var statements = ArrayListManaged(Ast.Statement).init(self.allocator);
         errdefer statements.deinit();
 
         while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
             const statement = try self.parse_stmt();
+            if (statement == .Expr and statement.Expr == .Block) {
+                statement.Expr.Block.outer = block;
+            }
             try statements.append(statement);
-            std.log.debug("{}", .{statement});
+            std.log.debug("{}\n", .{statement});
         }
         self.tokens.advance(1);
-
-        return statements;
+        block.* = .{ .stmts = statements, .stack_vars = .init(self.module.allocator), .outer = null };
+        return block;
     }
 
     fn parse_stmt(self: *Self) !Ast.Statement {
@@ -209,7 +214,7 @@ pub const Parser = struct {
                 token = self.tokens.peek(0);
                 assert(token != null);
 
-                var var_type: ?Ast.VarType = null;
+                var var_type: ?Ast.ExprType = null;
 
                 if (std.meta.eql(token.?.kind, .Colon)) {
                     self.tokens.advance(1);
@@ -220,7 +225,7 @@ pub const Parser = struct {
                         ptr_depth += 1;
                     }
 
-                    var_type = .{ .type = (try self.expect(.Ident, "'type definition'")).source, .ptr_depth = ptr_depth };
+                    var_type = .{ .type = (try self.expect(.Ident, "'type definition'")).source, .info = .{ .ptr_depth = ptr_depth } };
                 }
 
                 token = self.tokens.peek(0);
@@ -233,15 +238,22 @@ pub const Parser = struct {
                 }
 
                 // @TODO(shahzad): add support for assignment during initialization of variable
-                _ = try self.expect(.Semi, null);
+
+                _ = self.expect(.Semi, null) catch |err| {
+                    self.tokens.peek(0).?.print_loc();
+                    return err;
+                };
                 if (is_mut) {
                     return .{ .VarDefStackMut = .{ .name = var_name, .type = var_type, .expr = expr } };
                 } else {
                     return .{ .VarDefStack = .{ .name = var_name, .type = var_type, .expr = expr } };
                 }
             },
+            .CurlyOpen => {
+                const block = try self.parse_block();
+                return .{ .Expr = .{ .Block = block } };
+            },
             .Ident => {
-                // @TODO(shahzad): implement correct parsing of assignments, i.e. Literals shouldn't get assigned
                 const lhs = try self.parse_expr();
                 _ = self.expect(.Semi, null) catch |err| {
                     self.tokens.peek(0).?.print_loc();
@@ -256,14 +268,25 @@ pub const Parser = struct {
 
                 return .{ .Expr = lhs };
             },
+            .If => {
+                _ = self.tokens.consume();
+                // parse the condition
+                const expr = try self.parse_expr();
+                const block = try self.parse_block();
+
+                const expr_duped = try self.allocator.create(Ast.Expression);
+                expr_duped.* = expr;
+
+                return .{ .Expr = .{ .IfCondition = .{ .condition = expr_duped, .block = block, .label = undefined } } };
+            },
             .Return => {
                 self.tokens.advance(1);
-                var expr: ?Ast.Expression = null;
+                var expr: Ast.Expression = .NoOp;
                 if (!std.meta.eql(self.tokens.peek(0).?.kind, .Semi)) {
                     expr = try self.parse_expr();
                 }
                 _ = try self.expect(.Semi, null);
-                return .{ .Return = .{ .expr = expr } };
+                return .{ .Return = expr };
             },
             else => {
                 std.debug.panic("parse_statement for {} is not implemented!", .{token.?.kind});
@@ -333,12 +356,13 @@ pub const Parser = struct {
                 const rhs_expr = try self.parse_expr();
                 expr = .{ .BinOp = try Ast.BinaryOperation.init(self.allocator, kind, lhs_expr, rhs_expr) };
             },
-            .ParenClose, .Semi, .Comma => {
+            .ParenOpen, .CurlyOpen, .ParenClose, .CurlyClose, .Semi, .Comma => {
                 expr = lhs_expr;
             },
             else => {
-                std.log.err("parse_expr for token kind {} is not implemented!\n", .{token.?.kind});
-                unreachable;
+                std.log.err("expected expression found {}\n", .{token.?.kind});
+                token.?.print_loc();
+                return error.UnexpectedToken;
             },
         }
         return expr;
@@ -369,6 +393,9 @@ pub const Parser = struct {
             .LiteralString => |str| {
                 self.tokens.advance(1); // skip the token
                 expr = .{ .LiteralString = str };
+            },
+            .CurlyOpen => {
+                expr = .{ .Block = try self.parse_block() };
             },
             // @TODO(shahzad): i don't think we need this anymore
             // .Semi, .ParenClose => {

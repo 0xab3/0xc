@@ -78,33 +78,19 @@ pub fn get_size_of_int_literal(int_literal: u64) u32 {
 // generate code here and return the ident that specifies the location?
 // for the variable
 // @TODO(shahzad): this is shitty idea but by default we just put anything we've compiled to rax
-pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expr: *const Ast.Expression) !CompiledExpression {
+pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *const Ast.Expression) !CompiledExpression {
     switch (expr.*) {
         .LiteralInt => |expr_as_int_lit| {
             const int_lit_size: u32 = if (get_size_of_int_literal(expr_as_int_lit) <= 4) 4 else 8;
-
-            // @TODO(shahzad): use the size identifier
-            const size_ident = get_size_identifier_based_on_size(int_lit_size);
-            // @NOTE(shahzad): push literal ints on the stack
-            procedure.total_stack_var_offset += int_lit_size;
-
-            _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{int_lit_size});
-            _ = try self.program_builder.append_fmt("   mov {s} [rbp - {}], {}\n", .{ size_ident, procedure.total_stack_var_offset, expr_as_int_lit });
-            return .{ .LitInt = .{ .offset = procedure.total_stack_var_offset, .size = int_lit_size } };
+            return .{ .LitInt = .{ .literal = expr_as_int_lit, .size = int_lit_size } };
         },
         .LiteralString => |lit| {
             const str_lit = module.find_string_literal(lit);
-            procedure.total_stack_var_offset += 8;
-            _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{8});
-
-            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{str_lit.label});
-            _ = try self.program_builder.append_fmt("   mov {s} [rbp - {}], rax\n", .{ "QWORD", procedure.total_stack_var_offset });
-
-            return .{ .LitStr = .{ .offset = procedure.total_stack_var_offset, .size = 8 } };
+            return .{ .LitStr = .{ .expr = str_lit.label, .size = 8 } };
         },
         .NoOp => {},
         .Var => |expr_as_var| {
-            const stack_var = procedure.get_variable(expr_as_var);
+            const stack_var = block.find_variable(expr_as_var);
             const stack_offset = stack_var.?.offset;
 
             return .{ .Var = .{ .offset = stack_offset, .size = stack_var.?.meta.size } };
@@ -113,10 +99,16 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             // @TODO(shahzad)!!!!!: we don't support any function with arity more than one
 
             for (call_expr.params.items, 0..) |param_expr, idx| {
-                const expr_compiled_to_reg = try self.compile_expr(module, procedure, &param_expr);
+                const expr_compiled_to_reg = try self.compile_expr(module, block, &param_expr);
 
                 switch (expr_compiled_to_reg) {
-                    .Var, .LitInt => |compiled_expr| {
+                    .LitInt => |compiled_expr| {
+                        const register = self.get_callcov_arg_register(idx, compiled_expr.size);
+                        _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, compiled_expr.literal });
+                    },
+
+                    .Var,
+                    => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
                     },
@@ -126,7 +118,12 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
                     },
                     .LitStr => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
-                        _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
+                        if (idx * 2 < LinuxCallingConvRegisters.len) {
+                            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{compiled_expr.expr});
+                            _ = try self.program_builder.append_fmt("   mov {s}, rax\n", .{register});
+                        } else {
+                            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ register, compiled_expr.expr });
+                        }
                     },
                 }
             }
@@ -149,10 +146,24 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
             // x64 linux c convention specifies that return value should be in rax... we probably will have to change this
 
         },
+        .Block => |blk| {
+            try self.compile_block(module, blk);
+            return .{ .Register = .{ .expr = "assignment from compiled block is not implemented!", .size = 8 } };
+        },
+        .IfCondition => |if_condition| {
+            const compiled_expr = try self.compile_expr(module, block, if_condition.condition);
+            switch (compiled_expr) {
+                .Register => {
+                    _ = try self.program_builder.append_fmt("   jnz ", .{});
+                },
+                else => unreachable,
+            }
+            return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
+        },
         // @TODO(shahzad): figure out what to do with this shit
         .Tuple => {},
         .BinOp => |*expr_as_bin_op| {
-            return try self.compile_expr_bin_op(module, procedure, expr_as_bin_op);
+            return try self.compile_expr_bin_op(module, block, expr_as_bin_op);
         },
     }
     unreachable;
@@ -168,9 +179,13 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, e
 //      2 int literals = lea rax + intlit, 2nd intlit
 //      1var 1int literals = load variable in rax and add rax, int lit
 //      2var = load variable in rax, load variable in rdx add
-pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
-    const lhs = try self.compile_expr(module, procedure, bin_op.lhs);
-    const rhs = try self.compile_expr(module, procedure, bin_op.rhs);
+fn load_int_literal_to_register(self: *Self, register: []const u8, literal: u64) void {
+    self.program_builder.append_fmt("   mov {}, {}", .{ register, literal });
+}
+
+pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
+    const lhs = try self.compile_expr(module, block, bin_op.lhs);
+    const rhs = try self.compile_expr(module, block, bin_op.rhs);
     // @TODO(shahzad): @pretty change this to if
 
     var lhs_compiled: []const u8 = undefined;
@@ -179,12 +194,16 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
     switch (bin_op.op) {
         .Add => {
             switch (lhs) {
-                .Var, .LitInt => |expr| {
+                .LitInt => |expr| {
+                    const register = _get_regiter_based_on_size("a", expr.size);
+                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
+                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                },
+                .Var => |expr| {
                     const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("a", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
                     lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
-                    ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
                 .Register, .Call => |expr| {
                     lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
@@ -195,12 +214,17 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
             }
 
             switch (rhs) {
-                .Var, .LitInt => |expr| {
-                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
-                    const register = _get_regiter_based_on_size("d", register_size);
+                .LitInt => |expr| {
+                    const register = _get_regiter_based_on_size("d", expr.size);
+                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    ret = .{ .Register = .{ .expr = register, .size = expr.size } };
+                },
+                .Var => |expr| {
+                    const register = _get_regiter_based_on_size("d", expr.size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
-                    ret = .{ .Register = .{ .expr = register, .size = register_size } };
+                    ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Register, .Call => |expr| {
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
@@ -217,22 +241,35 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
         .Ass => {
             switch (lhs) {
                 .Var => |expr| {
-                    _ = try self.program_builder.append_fmt("   mov rax, rbp\n", .{});
-                    _ = try self.program_builder.append_fmt("   sub rax, {}\n", .{expr.offset});
+
+                    _ = try self.program_builder.append_fmt("   lea rax, [rbp - {}]\n", .{expr.offset});
                     lhs_compiled = try self.scratch_buffer.append_fmt("[rax]", .{});
                     ret = .{ .Register = .{ .expr = "rax", .size = 8 } };
                 },
                 else => unreachable, // we don't give a shit as of now
             }
             switch (rhs) {
-                .Var, .LitInt, .LitStr => |expr| {
+                .LitInt => |expr| {
+                    const register = _get_regiter_based_on_size("d", expr.size);
+                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    ret = .{ .Register = .{ .expr = register, .size = expr.size } };
+                },
+                .Var => |expr| {
                     const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("d", register_size);
                     _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
-                .Register, .Call => |expr| {
+                .LitStr => |expr| {
+                    const register = _get_regiter_based_on_size("d", 8);
+                    _ = try self.program_builder.append_fmt("   lea {s}, [rel {s}]\n", .{ register, expr.expr });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                },
+                .Register,
+                .Call,
+                => |expr| {
                     rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
                 },
             }
@@ -243,7 +280,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, procedure: *Ast.Pro
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }
 }
-pub fn compile_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, statement: *Ast.Statement) !void {
+pub fn compile_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !void {
     switch (statement.*) {
         .VarDefStack, .VarDefStackMut => |stmt| {
             if (!std.meta.eql(stmt.expr, .NoOp)) {
@@ -254,11 +291,11 @@ pub fn compile_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, s
                     .lhs = &var_as_expr,
                     .rhs = &rhs_as_expr,
                 };
-                _ = try self.compile_expr_bin_op(module, procedure, &bin_op_expr);
+                _ = try self.compile_expr_bin_op(module, block, &bin_op_expr);
             }
         },
         .Expr => |*stmt_as_expr| {
-            _ = try self.compile_expr(module, procedure, stmt_as_expr);
+            _ = try self.compile_expr(module, block, stmt_as_expr);
         },
         else => {},
     }
@@ -269,11 +306,14 @@ fn compile_proc_prelude(self: *Self, procedure: *Ast.ProcDef) !void {
     _ = try self.program_builder.append_fmt("   mov rbp, rsp\n", .{});
     _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{procedure.total_stack_var_offset});
 }
+fn compile_block(self: *Self, module: *Ast.Module, block: *Ast.Block) anyerror!void {
+    for (block.stmts.items) |*statement| {
+        try self.compile_stmt(module, block, statement);
+    }
+}
 pub fn compile_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef) !void {
     try self.compile_proc_prelude(procedure);
-    for (procedure.block.items) |*statement| {
-        try self.compile_stmt(module, procedure, statement);
-    }
+    try self.compile_block(module, procedure.block);
     try self.compile_proc_ending(procedure);
 }
 fn compile_proc_ending(self: *Self, procedure: *Ast.ProcDef) !void {
@@ -304,6 +344,8 @@ pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
         _ = try self.program_builder.append_fmt("extern {s}\n", .{proc_decl.name});
     }
     for (module.proc_defs.items) |*proc| {
+        std.debug.print("block_vars :{}\n",.{proc.block.stack_var_offset});
+        std.debug.print("block_vars :{}\n",.{proc.total_stack_var_offset});
         try self.compile_proc(module, proc);
     }
     std.debug.print("generated assembly", .{});

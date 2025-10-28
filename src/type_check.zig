@@ -17,19 +17,6 @@ const Error = error{
     TypeMisMatch,
 };
 //TODO(shahzad): add a formatter here
-const ExprType = struct {
-    type: []const u8,
-    info: union(enum) {
-        PtrDepth: usize,
-        IntLiteral: u64,
-    },
-    pub fn from_var_type(var_type: Ast.VarType, is_int_lit: bool, int_lit: usize) ExprType {
-        if (is_int_lit) {
-            return .{ .type = var_type.type, .info = .{ .IntLiteral = int_lit } };
-        }
-        return .{ .type = var_type.type, .info = .{ .PtrDepth = var_type.ptr_depth } };
-    }
-};
 // NOTE(shahzad): we use this as IntLiteralType ++ int_literal
 const IntLiteralType = "\x00intlit";
 
@@ -50,17 +37,21 @@ const PrimitiveTypes = [_]struct { []const u8, u16 }{
 pub fn init(allocator: Allocator, context: SourceContext) Self {
     return .{ .context = context, .allocator = allocator };
 }
-fn get_size_for_type(@"type": ExprType) Self.Error!u16 {
-    if (@"type".info == .PtrDepth and @"type".info.PtrDepth > 0) return 8;
-    if (@"type".info == .IntLiteral) {
-        return @intCast(get_size_of_int_literal(@"type".info.IntLiteral));
+fn get_size_for_type(@"type": Ast.ExprType) Self.Error!u16 {
+    if (std.mem.eql(u8, @"type".type, IntLiteralType)) {
+        return @intCast(get_size_of_int_literal(@"type".info.int_lit));
     }
+    if (@"type".info.ptr_depth > 0) return 8;
+
     for (PrimitiveTypes) |it| {
         if (std.mem.eql(u8, it[0], @"type".type)) {
             return it[1];
         }
     }
     return Error.TypeNotFound;
+}
+fn is_type_int_lit(@"type": Ast.ExprType) bool {
+    return std.mem.eql(u8, @"type".type, IntLiteralType);
 }
 pub fn get_size_of_int_literal(int_literal: u64) u32 {
     if (int_literal == 0) return 1;
@@ -79,7 +70,7 @@ fn get_unsigned_int_for_size(size: u16) []const u8 {
     unreachable;
 }
 
-pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
+pub fn type_check_proc_args(self: *Self, module: *Ast.Module, caller_block: *Ast.Block, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
     // @TODO(shahzad): better error reporting
     const params = proc_decl.get_required_params();
     const n_lines, _ = self.context.get_loc(proc_call.name);
@@ -90,13 +81,12 @@ pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.Pr
         std.log.debug("@TODO(shahzad): {s}:{}:{}: procedure call '{s}' contains more arguments than required! implement named args!!!!", .{ self.context.filename, n_lines, 0, proc_call.name });
     }
     for (params.items, 0..) |param, idx| {
-        const resolved_type = self.type_check_expr(module, procedure, &proc_call.params.items[idx]) catch {
+        const resolved_type = self.type_check_expr(module, caller_block, &proc_call.params.items[idx]) catch {
             std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, "unimplemented!" });
             return false;
         };
 
-        const param_expr_type = ExprType.from_var_type(param.decl.type.?, false, 0);
-        if (!can_type_resolve(param_expr_type, resolved_type)) {
+        if (!can_type_resolve(param.decl.type.?, resolved_type)) {
             std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, resolved_type.type });
             return false;
         }
@@ -104,7 +94,7 @@ pub fn type_check_proc_args(self: *Self, module: *Ast.Module, procedure: *Ast.Pr
     return true;
 }
 
-pub fn can_type_resolve(concrete_: ?ExprType, abstract_: ?ExprType) bool {
+pub fn can_type_resolve(concrete_: ?Ast.ExprType, abstract_: ?Ast.ExprType) bool {
     if (concrete_ == null and abstract_ == null) {
         return false;
     } else if (concrete_ == null or abstract_ == null) {
@@ -114,8 +104,8 @@ pub fn can_type_resolve(concrete_: ?ExprType, abstract_: ?ExprType) bool {
     const concrete = concrete_.?.type;
     var abstract = abstract_.?.type;
 
-    const is_abstract_int_lit = abstract_.?.info == .IntLiteral;
-    const is_concrete_int_lit = concrete_.?.info == .IntLiteral;
+    const is_abstract_int_lit = std.mem.eql(u8, abstract_.?.type, IntLiteralType);
+    const is_concrete_int_lit = std.mem.eql(u8, concrete_.?.type, IntLiteralType);
 
     if (is_abstract_int_lit and is_concrete_int_lit) {
         return true;
@@ -123,11 +113,11 @@ pub fn can_type_resolve(concrete_: ?ExprType, abstract_: ?ExprType) bool {
         return can_type_resolve(abstract_, concrete_);
     } else if (is_abstract_int_lit) {
         // this means that concrete is not a literal so check if it's a pointer
-        if (concrete_.?.info.PtrDepth > 0) return false; // idk if this is right or nah
-        const abstract_int_lit = abstract_.?.info.IntLiteral;
+        if (concrete_.?.info.ptr_depth > 0) return false; // idk if this is right or nah
+        const abstract_int_lit = abstract_.?.info.int_lit;
         const abstract_int_lit_size: u16 = @intCast(get_size_of_int_literal(abstract_int_lit));
         abstract = get_unsigned_int_for_size(abstract_int_lit_size);
-    } else if (abstract_.?.info.PtrDepth != concrete_.?.info.PtrDepth) {
+    } else if (abstract_.?.info.ptr_depth != concrete_.?.info.ptr_depth) {
         return false;
     }
 
@@ -140,11 +130,11 @@ pub fn can_type_resolve(concrete_: ?ExprType, abstract_: ?ExprType) bool {
     return false;
 }
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
-pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, expression: *const Ast.Expression) !ExprType {
+pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *const Ast.Expression) !Ast.ExprType {
     //@TODO(shahzad): this is ass brother please fix it
     switch (expression.*) {
         .Var => |expr_as_var| {
-            const variable = procedure.get_variable(expr_as_var);
+            const variable = block.find_variable(expr_as_var);
             const n_lines, _ = self.context.get_loc(expr_as_var);
             if (variable == null) {
                 std.log.err("{s}:{}:{}: use of undefined variable '{s}'", .{ self.context.filename, n_lines, 0, expr_as_var });
@@ -152,19 +142,19 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 return Error.VariableNotDefined;
             }
 
-            return .from_var_type(variable.?.decl.type.?, false, 0);
+            return variable.?.decl.type.?;
         },
         .BinOp => |expr_as_bin_op| {
             // @NOTE(shahzad)!!: PRECEDENCE IS REQUIRED FOR TYPE CHECKING TO PROPERLY WORK!!!!
-            const asignee_type = try self.type_check_expr(module, procedure, expr_as_bin_op.lhs);
-            if (asignee_type.info == .IntLiteral) {
-                const int_lit = asignee_type.info.IntLiteral;
+            const asignee_type = try self.type_check_expr(module, block, expr_as_bin_op.lhs);
+            if (is_type_int_lit(asignee_type)) {
+                const int_lit = asignee_type.info.int_lit;
                 std.debug.print("asignee_type int_literal, literal: {}\n", .{int_lit});
             } else std.debug.print("asignee_type {}\n", .{asignee_type});
 
-            const asigner_type = try self.type_check_expr(module, procedure, expr_as_bin_op.rhs);
-            if (asignee_type.info == .IntLiteral) {
-                const int_lit = asigner_type.info.IntLiteral;
+            const asigner_type = try self.type_check_expr(module, block, expr_as_bin_op.rhs);
+            if (is_type_int_lit(asigner_type)) {
+                const int_lit = asigner_type.info.int_lit;
                 std.debug.print("asigner_type int_literal, literal: {}\n", .{int_lit});
             } else std.debug.print("asigner_type {}\n", .{asigner_type});
 
@@ -177,16 +167,19 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                     asignee_type
                 else
                     asigner_type;
-            if (return_type.info == .IntLiteral) {
-                const int_lit = return_type.info.IntLiteral;
+            if (is_type_int_lit(return_type)) {
+                const int_lit = return_type.info.int_lit;
                 std.debug.print("BinOP returning int_literal literal: {}\n", .{int_lit});
             } else std.debug.print("BinOP returning {}\n", .{return_type});
             return return_type;
         },
         .LiteralString => |str_lit| {
             try module.string_literals.append(.{ .string = str_lit, .label = undefined });
-            return .{ .type = "x8", .info = .{ .PtrDepth = 1 } }; // hack
+            return .{ .type = "x8", .info = .{ .ptr_depth = 1 } }; // hack
 
+        },
+        .Block => |blk| {
+            return try self.type_check_block(module, blk, block.stack_var_offset);
         },
 
         .Call => |*expr_as_call| {
@@ -199,10 +192,10 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
                 self.context.print_loc(expr_as_call.name);
                 return Error.ProcedureNotDefined;
             }
-            if (!self.type_check_proc_args(module, procedure, expr_as_call, &proc_decl.?)) {
+            if (!self.type_check_proc_args(module, block, expr_as_call, &proc_decl.?)) {
                 return Error.ProcedureCallArgsMismatch;
             }
-            return .from_var_type(proc_decl.?.return_type, false, 0);
+            return proc_decl.?.return_type;
         },
         .NoOp, .Tuple => {
             // @TODO(shahzad)!!!!!: this smells bad
@@ -216,7 +209,15 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
 
             // @NOTE(shahzad)!: Literal int is by default unsigned
 
-            return .{ .type = IntLiteralType, .info = .{ .IntLiteral = expr_as_int_lit } };
+            return .{ .type = IntLiteralType, .info = .{ .int_lit = expr_as_int_lit } };
+        },
+        .IfCondition => |if_block| {
+            _ = if_block;
+            // is the block.stack_var_offset set atp?? cause we will need it for initializing the
+            // if block
+            unreachable;
+            // _ = try self.type_check_expr(module, block, if_block.condition);
+            // return try self.type_check_block(module, if_block.block, );
         },
         // else => |unhandled| {
         //     std.log.err("type_check_expr is not implemented for {}\n", .{unhandled});
@@ -227,11 +228,11 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
 }
 
 //todo(shahzad): can we print the propagating error?
-pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef, statement: *Ast.Statement) !void {
+pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !void {
     // @TODO(shahzad)!!!!: check mutability on assignments
     switch (statement.*) {
         .VarDefStack, .VarDefStackMut => |stmt_var_def_stack| {
-            const variable = procedure.get_variable(stmt_var_def_stack.name);
+            const variable = block.find_local_variable(stmt_var_def_stack.name);
             if (variable != null) {
                 const n_lines, const line = self.context.get_loc(variable.?.decl.name);
 
@@ -249,60 +250,79 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
 
         },
         .Expr => |*stmt_expr| {
-            _ = try self.type_check_expr(module, procedure, stmt_expr);
+            _ = try self.type_check_expr(module, block, stmt_expr);
         },
         .Return => |stmt_return| {
-            if (!std.mem.eql(u8, procedure.decl.return_type.type, "void")) {
-                if (stmt_return.expr == null) {
-                    std.log.err("@TODO(shahzad): add something in return to get the location!!!", .{});
-                    std.log.err("{s}: caller expects '{s}' but procedure '{s}' returns void", .{
-                        self.context.filename,
-                        procedure.decl.return_type.type,
-                        procedure.decl.name,
-                    });
-                }
-            }
-            if (stmt_return.expr != null) {
-                _ = try self.type_check_expr(
-                    module,
-                    procedure,
-                    &stmt_return.expr.?,
-                );
-            }
+            _ = stmt_return;
+            unreachable;
+            // if (!std.mem.eql(u8, procedure.decl.return_type.type, "void")) {
+            //     if (stmt_return.expr == null) {
+            //         std.log.err("@TODO(shahzad): add something in return to get the location!!!", .{});
+            //         std.log.err("{s}: caller expects '{s}' but procedure '{s}' returns void", .{
+            //             self.context.filename,
+            //             procedure.decl.return_type.type,
+            //             procedure.decl.name,
+            //         });
+            //     }
+            // }
+            // if (stmt_return.expr != null) {
+            //     _ = try self.type_check_expr(
+            //         module,
+            //         procedure,
+            //         &stmt_return.expr.?,
+            //     );
+            // }
             //@TODO(shahzad): check all the variables in return value is defined or nah
         },
     }
 }
-pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef) !void {
-    var stack_variable_offset: u16 = 0;
-    for (procedure.block.items) |*statement| {
-        try self.type_check_stmt(module, procedure, statement);
+
+// TODO(shahzad): return the type that the block resolves to
+pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, block_stack_base: usize) anyerror!Ast.ExprType {
+    block.stack_var_offset = block_stack_base;
+    for (block.stmts.items) |*statement| {
+        try self.type_check_stmt(module, block, statement);
+
         if (statement.* == .VarDefStack or statement.* == .VarDefStackMut) {
             const var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
-            const as_expr_type: ExprType = .{
-                .type = var_def.type.?.type,
-                .info = .{ .PtrDepth = var_def.type.?.ptr_depth },
-            };
-            const size = get_size_for_type(as_expr_type) catch |err| {
+            const size = get_size_for_type(var_def.type.?) catch |err| {
                 std.log.debug("user defined types are not supported!", .{});
                 return err;
             };
-            stack_variable_offset += if (size <= 4) 4 else 8;
+            block.stack_var_offset += if (size <= 4) 4 else 8;
             var stack_var: Ast.StackVar = undefined;
-            stack_var.init(var_def.name, stack_variable_offset, size, var_def.type, statement.* == .VarDefStackMut);
+            stack_var.init(var_def.name, @intCast(block.stack_var_offset), size, var_def.type, statement.* == .VarDefStackMut);
             if (!std.meta.eql(var_def.expr, .NoOp)) {
-                const expr_type = try self.type_check_expr(module, procedure, &var_def.expr);
-                const var_def_type_as_expr_type: ExprType = .from_var_type(var_def.type.?, false, 0);
-                if (!can_type_resolve(var_def_type_as_expr_type, expr_type)) {
-                    std.log.err("unable to resolve type {any} to {any}\n", .{ var_def.type , expr_type.type });
+                const expr_type = try self.type_check_expr(module, block, &var_def.expr);
+                if (!can_type_resolve(var_def.type.?, expr_type)) {
+                    std.log.err("unable to resolve type {any} to {any}\n", .{ var_def.type, expr_type.type });
                     return error.TypeMisMatch;
                 }
             }
 
-            try procedure.stack_vars.append(stack_var);
+            try block.stack_vars.append(stack_var);
+        }
+        if (statement.* == .Expr and statement.Expr == .Block) {
+            block.stack_var_offset += statement.Expr.Block.stack_var_offset;
         }
     }
-    procedure.total_stack_var_offset = stack_variable_offset;
+    block.stack_var_offset -= block_stack_base;
+
+    return .{ .type = "void", .info = .{ .ptr_depth = 0 } };
+}
+pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef) !void {
+    const return_type = try self.type_check_block(module, procedure.block, 0);
+    procedure.total_stack_var_offset = procedure.block.stack_var_offset;
+    if (can_type_resolve(procedure.decl.return_type, return_type) != true) {
+        const n_lines, _ = self.context.get_loc(procedure.decl.return_type.type);
+        std.log.err("{s}:{}: caller expects '{s}' but procedure '{s}' returns '{s}'\n", .{
+            self.context.filename,
+            n_lines,
+            procedure.decl.return_type.type,
+            procedure.decl.name,
+            return_type.type,
+        });
+    }
 }
 pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
     var err = false;

@@ -17,12 +17,22 @@ pub const Module = struct {
     context: SourceContext,
     // i could use a hashmap but no
     string_literals: ArrayListManaged(StringLiteral),
+    arena: std.heap.ArenaAllocator,
+    blocks: std.mem.Allocator = undefined,
     proc_decls: ArrayListManaged(ProcDecl),
     proc_defs: ArrayListManaged(ProcDef),
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
-        self.* = .{ .allocator = allocator, .proc_defs = .init(allocator), .proc_decls = .init(allocator), .context = context, .string_literals = .init(allocator) };
+        self.* = .{
+            .allocator = allocator,
+            .proc_defs = .init(allocator),
+            .proc_decls = .init(allocator),
+            .context = context,
+            .string_literals = .init(allocator),
+            .arena = .init(allocator),
+        };
+        self.blocks = self.arena.allocator();
     }
     pub fn get_proc_decl(self: *Self, name: []const u8) ?ProcDecl {
         for (self.proc_decls.items) |proc_decl| {
@@ -73,6 +83,36 @@ pub const BinaryOperation = struct {
         return .{ .op = op_type, .lhs = lhs, .rhs = rhs };
     }
 };
+
+pub const Block = struct {
+    outer: ?*Block,
+    stmts: ArrayListManaged(Statement),
+    stack_vars: ArrayListManaged(StackVar), // populated in type checking phase
+    stack_var_offset: usize = 0,
+    const Self = @This();
+    pub fn find_variable(self: *Self, var_name: []const u8) ?StackVar {
+        for (self.stack_vars.items) |stack_var| {
+            if (std.mem.eql(u8, stack_var.decl.name, var_name)) {
+                return stack_var;
+            }
+        }
+        if (self.outer) |outer| return outer.find_variable(var_name);
+        return null;
+    }
+    pub fn find_local_variable(self: *Self, var_name: []const u8) ?StackVar {
+        for (self.stack_vars.items) |stack_var| {
+            if (std.mem.eql(u8, stack_var.decl.name, var_name)) {
+                return stack_var;
+            }
+        }
+        return null;
+    }
+};
+pub const IfCondition = struct {
+    label: []const u8,
+    condition: *Expression,
+    block: *Block,
+};
 // @TODO(shahzad): add source here so we can do error reporting
 pub const Expression = union(enum) {
     pub const ProcCall = struct { name: []const u8, params: ArrayListManaged(Expression) };
@@ -82,6 +122,8 @@ pub const Expression = union(enum) {
     LiteralString: []const u8,
     Call: ProcCall,
     Tuple: ArrayListManaged(Expression),
+    IfCondition: IfCondition,
+    Block: *Block,
     BinOp: BinaryOperation,
 };
 
@@ -92,23 +134,22 @@ pub const Statement = union(enum) {
     VarDefGlobal: []u8,
     VarDefGlobalMut: []u8,
     Expr: Expression,
-    Return: struct {
-        expr: ?Expression,
-    },
+    Return: Expression,
 };
 
 //TODO(shahzad): add fmt here
-pub const VarType = struct {
+pub const ExprType = struct {
     type: []const u8, // this should be in meta but fuck it
-    ptr_depth: usize, // contains the depth
+    info: union { ptr_depth: usize, int_lit: u64 }, // contains the depth or int literal
+
 };
 pub const VarDecl = struct {
     name: []const u8,
-    type: ?VarType,
+    type: ?ExprType,
     expr: Expression,
 
-    pub fn init(name: []const u8, @"type": []const u8, ptr: usize) @This() {
-        return .{ .name = name, .type = .{ .type = @"type", .ptr_depth = ptr }, .expr = .NoOp };
+    pub fn init(name: []const u8, @"type": []const u8, ptr_depth: usize) @This() {
+        return .{ .name = name, .type = .{ .type = @"type", .info = .{ .ptr_depth = ptr_depth } }, .expr = .NoOp };
     }
 };
 pub const VarMetaData = struct {
@@ -125,7 +166,7 @@ pub const StackVar = struct {
     offset: u32,
 
     const Self = @This();
-    pub fn init(self: *Self, name: []const u8, offset: u32, size: u31, @"type": ?VarType, is_mutable: bool) void {
+    pub fn init(self: *Self, name: []const u8, offset: u32, size: u31, @"type": ?ExprType, is_mutable: bool) void {
         self.* = .{ .decl = .{ .name = name, .type = @"type", .expr = undefined }, .meta = .init(size, is_mutable), .offset = offset };
     }
 };
@@ -146,10 +187,10 @@ pub const Argument = struct { // @TODO(shahzad): do we really need this? Aren't 
 pub const ProcDecl = struct {
     name: []const u8,
     args_list: ArrayListManaged(Argument),
-    return_type: VarType, // concrete type?
+    return_type: ExprType, // concrete type?
     const Self = @This();
     pub fn init(name: []const u8, args: ArrayListManaged(Argument), return_type: []const u8, ptr_depth: usize) Self {
-        return .{ .name = name, .args_list = args, .return_type = .{ .type = return_type, .ptr_depth = ptr_depth } };
+        return .{ .name = name, .args_list = args, .return_type = .{ .type = return_type, .info = .{ .ptr_depth = ptr_depth } } };
     }
     pub fn get_required_params(self: *const Self) ArrayListManaged(Argument) {
         // @TODO(shahzad): impl this function frfr
@@ -160,22 +201,14 @@ pub const ProcDecl = struct {
 pub const ProcDef = struct {
     decl: ProcDecl,
     total_stack_var_offset: usize = 0,
-    stack_vars: ArrayListManaged(StackVar), // populated in type checking phase
-    block: ArrayListManaged(Statement),
+    block: *Block,
     const Self = @This();
 
-    pub fn init(allocator: Allocator, decl: ProcDecl, block: ArrayListManaged(Statement)) Self {
-        return .{ .decl = decl, .stack_vars = .init(allocator), .block = block };
+    pub fn init(decl: ProcDecl, block: *Block) Self {
+        return .{ .decl = decl, .block = block };
     }
     pub fn get_variable(self: *Self, var_name: []const u8) ?StackVar {
-        const stack_vars = self.stack_vars.items;
-        for (stack_vars) |item| {
-            const var_decl = item.decl;
-            if (std.mem.eql(u8, var_decl.name, var_name)) {
-                return item;
-            }
-        }
-        return null;
+        return self.block.find_local_variable(var_name);
     }
 };
 

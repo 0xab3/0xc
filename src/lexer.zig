@@ -11,8 +11,31 @@ const libc = @cImport({
     @cInclude("stdio.h");
 });
 
+const keywords = [_]struct { []const u8, TokenKind }{
+    .{ "proc", .ProcDecl },
+    .{ "let", .VarDef },
+    .{ "return", .Return },
+    .{ "if", .If },
+    .{ "else", .Else },
+};
+
 // @TODO(shahzad): this should be a common thingy
-pub const BinOp = enum { Ass, Add, Sub, Mul, Div };
+pub const BinOp = enum {
+    Ass,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    AddAss,
+    SubAss,
+    MulAss,
+    DivAss,
+    Eq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+};
 
 pub const TokenKind = union(enum) {
     // literals
@@ -25,16 +48,6 @@ pub const TokenKind = union(enum) {
     //identifier
     Ident: void,
     Pointer: void,
-    OpAddAss: void,
-    OpSubAss: void,
-    OpMulAss: void,
-    OpDivAss: void,
-
-    OpEq: void,
-    OpLt: void,
-    OpGt: void,
-    OpLtEq: void,
-    OpGtEq: void,
 
     // native?
     ParenOpen: void,
@@ -55,6 +68,7 @@ pub const TokenKind = union(enum) {
     Else: void,
     While: void,
     For: void,
+    Not: void,
 
     Return: void,
 
@@ -69,7 +83,7 @@ pub const TokenKind = union(enum) {
             ')' => .{ 1, .ParenClose },
             '{' => .{ 1, .CurlyOpen },
             '}' => .{ 1, .CurlyClose },
-            '=' => .{ 1, .{ .Op = .Ass } },
+            '=' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .Eq } } else .{ 1, .{ .Op = .Ass } },
             ':' => .{ 1, .Colon },
             ';' => .{ 1, .Semi },
             ',' => .{ 1, .Comma },
@@ -78,7 +92,7 @@ pub const TokenKind = union(enum) {
                 if (tok.len > 1) {
                     switch (tok[1]) {
                         '>' => break :blk .{ 2, .Arrow },
-                        '=' => break :blk .{ 2, .OpSubAss },
+                        '=' => break :blk .{ 2, .{ .Op = .SubAss } },
                         else => {
                             std.log.err("unidentified token \"{s}\"\n", .{tok[1..]});
                             break :blk .{ 1, .{ .Op = .Sub } };
@@ -87,10 +101,10 @@ pub const TokenKind = union(enum) {
                 } else break :blk .{ 1, .{ .Op = .Sub } };
             },
 
-            '+' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpAddAss } else .{ 1, .{ .Op = .Add } },
-            '*' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpMulAss } else .{ 1, .{ .Op = .Mul } },
-            '/' => if (tok.len > 1 and tok[1] == '=') .{ 2, .OpDivAss } else .{ 1, .{ .Op = .Div } },
-            '^' => .{ 1,  .Pointer  },
+            '+' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .AddAss } } else .{ 1, .{ .Op = .Add } },
+            '*' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .MulAss } } else .{ 1, .{ .Op = .Mul } },
+            '/' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .DivAss } } else .{ 1, .{ .Op = .Div } },
+            '^' => .{ 1, .Pointer },
 
             'a'...'z', 'A'...'Z', '_' => blk: {
                 var ident_idx: usize = 0;
@@ -102,14 +116,10 @@ pub const TokenKind = union(enum) {
                     ident_idx += 1;
                 }
                 ident.len = ident_idx;
-                if (std.mem.eql(u8, ident, "proc")) {
-                    break :blk .{ ident.len, .ProcDecl };
-                } else if (std.mem.eql(u8, ident, "let")) {
-                    break :blk .{ ident.len, .VarDef };
-                } else if (std.mem.eql(u8, ident, "mut")) {
-                    break :blk .{ ident.len, .Mut };
-                } else if (std.mem.eql(u8, ident, "return")) {
-                    break :blk .{ ident.len, .Return };
+                for (keywords) |keyword| {
+                    if (std.mem.eql(u8, ident, keyword[0])) {
+                        break :blk .{ ident.len, keyword[1] };
+                    }
                 }
                 break :blk .{ ident.len, .Ident };
             },
@@ -121,6 +131,7 @@ pub const TokenKind = union(enum) {
                 const literal = try strings.parse_string_literal(tok);
                 break :blk .{ literal.len + 1, .{ .LiteralString = literal[0 .. literal.len - 1] } };
             },
+            '!' => .{ 1, .Not },
 
             else => {
                 std.log.err("unidentified token \"{c}\"\n", .{tok[0]});
@@ -134,24 +145,24 @@ pub const TokenKind = union(enum) {
             .LiteralString => "string_lit",
             .LiteralFloat => "float_lit",
             .Ident => "ident",
+
             .Op => |op| blk: switch (op) {
                 .Add => break :blk "+",
                 .Sub => break :blk "-",
                 .Mul => break :blk "*",
                 .Div => break :blk "/",
                 .Ass => break :blk "=",
+                .AddAss => break :blk "+=",
+                .SubAss => break :blk "-=",
+                .MulAss => break :blk "*=",
+                .DivAss => break :blk "/=",
+                .Eq => "==",
+                .Lt => "<",
+                .Gt => ">",
+                .LtEq => "<=",
+                .GtEq => ">=",
             },
             .Pointer => "^",
-            .OpAddAss => "+=",
-            .OpSubAss => "-=",
-            .OpMulAss => "*=",
-            .OpDivAss => "/=",
-
-            .OpEq => "==",
-            .OpLt => "<",
-            .OpGt => ">",
-            .OpLtEq => "<=",
-            .OpGtEq => ">=",
             .ParenOpen => "(",
             .ParenClose => ")",
             .CurlyOpen => "{",
@@ -167,6 +178,7 @@ pub const TokenKind = union(enum) {
             .Else => "else",
             .While => "while",
             .For => "for",
+            .Not => "!",
             .Return => "return",
             .Eof => "eof",
         };
@@ -251,6 +263,6 @@ pub const Lexer = struct {
 
             try self.tokens.append(token);
         }
-        try self.tokens.append(.{ .kind = .Eof, .line = undefined, .source = undefined });
+        try self.tokens.append(.{ .kind = .Eof, .line = current_line, .source = program[program.len..] });
     }
 };

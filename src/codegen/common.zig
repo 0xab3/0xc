@@ -7,10 +7,14 @@ pub const CompiledExpression = union(enum) {
         offset: usize,
         size: u32,
     };
+    const CompiledExprLiteral = struct {
+        literal: u64,
+        size: u32,
+    };
 
     Var: CompiledExprStack,
-    LitInt: CompiledExprStack,
-    LitStr: CompiledExprStack,
+    LitInt: CompiledExprLiteral,
+    LitStr: CompiledExpCommon,
     Register: CompiledExpCommon,
     Call: CompiledExpCommon,
 };

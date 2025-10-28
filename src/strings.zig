@@ -60,7 +60,8 @@ pub fn parse_string_literal(buffer: []const u8) ![]const u8 {
 
         if (!ascii.isAlphanumeric(buffer[idx]) and
             !ascii.isWhitespace(buffer[idx]) and
-            !is_symbol(buffer[idx])) return Error.NonAlphaNumericCharacter;
+            !is_symbol(buffer[idx]) and buffer[idx] != '`' and
+            buffer[idx] != '\'') return Error.NonAlphaNumericCharacter;
         if (buffer[idx] == '\\') {
             if (idx + 1 >= buffer.len) return Error.UnTerminatedEscape;
             switch (buffer[idx + 1]) {
