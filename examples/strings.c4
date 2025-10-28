@@ -2,6 +2,5 @@ proc printf(fmt: ^x8, arg: x32) -> void;
 
 proc main() -> void {
   let fmt: ^x8 = "string literals in my own language before gta %d is crazy\n";
-  let x: x32 = 6;
-  printf(fmt , x);
+  printf(fmt , 6);
 }
