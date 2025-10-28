@@ -14,7 +14,7 @@ const CodeGen = @import("./codegen/x64_nasm_linux.zig");
 pub fn build_asm_file(file_path: []const u8, out_path: []const u8, is_object_only: bool, object_files: std.array_list.Managed([]const u8)) void {
     var cmd: nob.Cmd = nob.Cmd{};
     const obj_filename = nob.temp_sprintf("%s.o", file_path.ptr);
-    nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "nasm","-g", "-f", "elf64", file_path.ptr, "-o", if (is_object_only) out_path.ptr else obj_filename });
+    nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "as","-g", file_path.ptr, "-o", if (is_object_only) out_path.ptr else obj_filename });
     _ = nob.cmd_run_opt(&cmd, .{});
     if (is_object_only) return;
     nob.da_append_many([*c]const u8, &cmd, &[_][*c]const u8{ "gcc", "-g", obj_filename });
@@ -57,7 +57,7 @@ pub fn main() !void {
     try code_gen.compile_mod(&module);
 
     var buff: [1024]u8 = undefined;
-    const asm_filename = try std.fmt.bufPrintZ(&buff, "{s}.asm", .{args.output_filename});
+    const asm_filename = try std.fmt.bufPrintZ(&buff, "{s}.s", .{args.output_filename});
 
     try io.write_entire_file(asm_filename, code_gen.program_builder.string.items);
 

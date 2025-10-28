@@ -66,7 +66,7 @@ fn _get_regiter_based_on_size(comptime register: []const u8, size: usize) []cons
 }
 
 fn _clear_register(self: *Self, register: []const u8) !void {
-    _ = try self.program_builder.append_fmt("   xor {s}, {s}\n", .{ register, register });
+    _ = try self.program_builder.append_fmt("   xor %{s}, %{s}\n", .{ register, register });
 }
 
 pub fn get_size_of_int_literal(int_literal: u64) u32 {
@@ -104,25 +104,25 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 switch (expr_compiled_to_reg) {
                     .LitInt => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
-                        _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, compiled_expr.literal });
+                        _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ compiled_expr.literal, register });
                     },
 
                     .Var,
                     => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
-                        _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, compiled_expr.offset });
+                        _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s}\n", .{ compiled_expr.offset, register });
                     },
                     .Register, .Call => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
-                        _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ register, compiled_expr.expr });
+                        _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
                     },
                     .LitStr => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         if (idx * 2 < LinuxCallingConvRegisters.len) {
-                            _ = try self.program_builder.append_fmt("   lea rax, [rel {s}]\n", .{compiled_expr.expr});
-                            _ = try self.program_builder.append_fmt("   mov {s}, rax\n", .{register});
+                            _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ compiled_expr.expr, register }); 
                         } else {
-                            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ register, compiled_expr.expr });
+                            unreachable; // unimplemented
+                            // _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
                         }
                     },
                 }
@@ -132,17 +132,17 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             if (module.get_proc_decl(call_expr.name) != null) {
                 // c abi expect number of vector register used in rax if a function with
                 // va args is called, we don't support that anyways to just zeroing out rax
-                _ = try self.program_builder.append_fmt("   mov rax, 0\n", .{});
-                _ = try self.program_builder.append_fmt("   call {s} wrt ..plt\n", .{call_expr.name});
+                _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
+                _ = try self.program_builder.append_fmt("   call {s}@PLT\n", .{call_expr.name});
             } else {
                 // @NOTE(shahzad): if the proc is not in decl_array that means it is not extern, which means
                 // that it can only be a defined proc, calling undeclared proc is handled by the parser
                 assert(module.get_proc_def(call_expr.name) != null);
 
-                _ = try self.program_builder.append_fmt("   mov rax, 0\n", .{});
+                _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
                 _ = try self.program_builder.append_fmt("   call {s}\n", .{call_expr.name});
             }
-            return .{ .Call = .{ .expr = "rax", .size = 8 } };
+            return .{ .Call = .{ .expr = "%rax", .size = 8 } };
             // x64 linux c convention specifies that return value should be in rax... we probably will have to change this
 
         },
@@ -180,7 +180,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
 //      1var 1int literals = load variable in rax and add rax, int lit
 //      2var = load variable in rax, load variable in rdx add
 fn load_int_literal_to_register(self: *Self, register: []const u8, literal: u64) void {
-    self.program_builder.append_fmt("   mov {}, {}", .{ register, literal });
+    self.program_builder.append_fmt("   mov ${}, %{}", .{ literal, register });
 }
 
 pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
@@ -196,17 +196,17 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             switch (lhs) {
                 .LitInt => |expr| {
                     const register = _get_regiter_based_on_size("a", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
-                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Var => |expr| {
                     const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("a", register_size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
-                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s} \n", .{ expr.offset, register });
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Register, .Call => |expr| {
-                    lhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
                 .LitStr => {
                     unreachable;
@@ -216,66 +216,66 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             switch (rhs) {
                 .LitInt => |expr| {
                     const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Var => |expr| {
                     const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s}\n", .{ expr.offset, register });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Register, .Call => |expr| {
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                     ret = .{ .Register = .{ .expr = expr.expr, .size = expr.size } };
                 },
                 .LitStr => {
                     unreachable;
                 },
             }
-            _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+            _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
             self.scratch_buffer.reset();
             return ret;
         },
         .Ass => {
             switch (lhs) {
                 .Var => |expr| {
-
-                    _ = try self.program_builder.append_fmt("   lea rax, [rbp - {}]\n", .{expr.offset});
-                    lhs_compiled = try self.scratch_buffer.append_fmt("[rax]", .{});
+                    _ = try self.program_builder.append_fmt("   leaq -{}(%rbp), %rax\n", .{expr.offset});
+                    lhs_compiled = try self.scratch_buffer.append_fmt("(%rax)", .{});
                     ret = .{ .Register = .{ .expr = "rax", .size = 8 } };
                 },
                 else => unreachable, // we don't give a shit as of now
             }
+            // lhs is memory pointer so if you don't put rhs in register it requires a size mnemonic
             switch (rhs) {
                 .LitInt => |expr| {
                     const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, {}\n", .{ register, expr.literal });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Var => |expr| {
                     const register_size: u32 = if (expr.size <= 4) 4 else 8;
                     const register = _get_regiter_based_on_size("d", register_size);
-                    _ = try self.program_builder.append_fmt("   mov {s}, [rbp - {}]\n", .{ register, expr.offset });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   mov - {}(%rbp), ${s}\n", .{ expr.offset, register });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
                 .LitStr => |expr| {
                     const register = _get_regiter_based_on_size("d", 8);
-                    _ = try self.program_builder.append_fmt("   lea {s}, [rel {s}]\n", .{ register, expr.expr });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{register});
+                    _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr,register });
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Register,
                 .Call,
                 => |expr| {
-                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
             }
-            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
             self.scratch_buffer.reset();
-            return .{ .Register = .{ .expr = "we don't care abt this shit anymore", .size = 100000 } };
+            return .{ .Register = .{ .expr = "assignmente cannot resolve to a type", .size = 100000 } };
         },
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }
@@ -303,8 +303,8 @@ pub fn compile_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stateme
 fn compile_proc_prelude(self: *Self, procedure: *Ast.ProcDef) !void {
     // @TODO(shahzad): what about the arguments :sob::sob:
     _ = try self.program_builder.append_fmt("{s}:\n", .{procedure.decl.name});
-    _ = try self.program_builder.append_fmt("   mov rbp, rsp\n", .{});
-    _ = try self.program_builder.append_fmt("   sub rsp, {}\n", .{procedure.total_stack_var_offset});
+    _ = try self.program_builder.append_fmt("   mov %rsp, %rbp\n", .{});
+    _ = try self.program_builder.append_fmt("   sub ${}, %rsp\n", .{procedure.total_stack_var_offset});
 }
 fn compile_block(self: *Self, module: *Ast.Module, block: *Ast.Block) anyerror!void {
     for (block.stmts.items) |*statement| {
@@ -317,35 +317,33 @@ pub fn compile_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef) !
     try self.compile_proc_ending(procedure);
 }
 fn compile_proc_ending(self: *Self, procedure: *Ast.ProcDef) !void {
-    _ = try self.program_builder.append_fmt("   add rsp, {}\n", .{procedure.total_stack_var_offset});
+    _ = try self.program_builder.append_fmt("   add ${}, %rsp\n", .{procedure.total_stack_var_offset});
     std.log.debug("@TODO(shahzad): add return value :sob:", .{});
-    _ = try self.program_builder.append_fmt("   xor rax, rax\n", .{});
+    _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
     _ = try self.program_builder.append_fmt("   ret\n", .{});
 }
 pub fn compile_data_section(self: *Self, module: *Ast.Module) !void {
     var label_no: usize = 0;
-    _ = try self.program_builder.append_fmt("section .rodata\n", .{});
+    _ = try self.program_builder.append_fmt(".section .rodata\n", .{});
     for (module.string_literals.items) |*str_lit| {
         str_lit.label = try self.string_arena.append_fmt("LD{d:0>2}", .{label_no});
         _ = try self.program_builder.append_fmt("{s}:\n", .{str_lit.label});
-        _ = try self.program_builder.append_fmt("db `{s}`, 0\n", .{str_lit.string});
+        _ = try self.program_builder.append_fmt(".string \"{s}\"\n", .{str_lit.string});
         label_no += 1;
     }
 }
 
 pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
     try self.compile_data_section(module);
-    _ = try self.program_builder.append_fmt("section .text\n", .{});
+    _ = try self.program_builder.append_fmt(".section .text\n", .{});
     if (module.has_main_proc) {
-        _ = try self.program_builder.append_fmt("global main\n", .{});
+        _ = try self.program_builder.append_fmt(".global main\n", .{});
         // @NOTE(shahzad): we linking with crt so we don't care much about anything for now
     }
     for (module.proc_decls.items) |*proc_decl| {
-        _ = try self.program_builder.append_fmt("extern {s}\n", .{proc_decl.name});
+        _ = try self.program_builder.append_fmt(".extern {s}\n", .{proc_decl.name});
     }
     for (module.proc_defs.items) |*proc| {
-        std.debug.print("block_vars :{}\n",.{proc.block.stack_var_offset});
-        std.debug.print("block_vars :{}\n",.{proc.total_stack_var_offset});
         try self.compile_proc(module, proc);
     }
     std.debug.print("generated assembly", .{});
