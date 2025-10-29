@@ -5,6 +5,8 @@ const Ast = @import("../ast.zig");
 const StringBuilder = @import("../string_builder.zig");
 const common = @import("./common.zig");
 const CompiledExpression = common.CompiledExpression;
+const CompiledExprStack = CompiledExpression.CompiledExprStack;
+const CompiledExprLiteral = CompiledExpression.CompiledExprLiteral;
 
 program_builder: StringBuilder,
 scratch_buffer: StringBuilder,
@@ -119,7 +121,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                     .LitStr => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
                         if (idx * 2 < LinuxCallingConvRegisters.len) {
-                            _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ compiled_expr.expr, register }); 
+                            _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ compiled_expr.expr, register });
                         } else {
                             unreachable; // unimplemented
                             // _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
@@ -151,13 +153,22 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             return .{ .Register = .{ .expr = "assignment from compiled block is not implemented!", .size = 8 } };
         },
         .IfCondition => |if_condition| {
+            module.total_if_conditions += 1;
+            const n_branch = module.total_if_conditions;
+
+
+            var label: [32]u8 = undefined;
+            const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
+
             const compiled_expr = try self.compile_expr(module, block, if_condition.condition);
             switch (compiled_expr) {
                 .Register => {
-                    _ = try self.program_builder.append_fmt("   jnz ", .{});
+                    _ = try self.program_builder.append_fmt("   jnz {s}\n", .{label_fmt});
                 },
                 else => unreachable,
             }
+            _ = try self.compile_block(module, if_condition.block);
+            _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
             return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
         },
         // @TODO(shahzad): figure out what to do with this shit
@@ -179,30 +190,36 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
 //      2 int literals = lea rax + intlit, 2nd intlit
 //      1var 1int literals = load variable in rax and add rax, int lit
 //      2var = load variable in rax, load variable in rdx add
-fn load_int_literal_to_register(self: *Self, register: []const u8, literal: u64) void {
-    self.program_builder.append_fmt("   mov ${}, %{}", .{ literal, register });
+fn load_int_literal_to_register(self: *Self, expr: CompiledExprLiteral, comptime register: []const u8) ![]const u8 {
+    const reg = _get_regiter_based_on_size(register, expr.size);
+    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, reg });
+    return reg;
+}
+pub fn load_variable_to_register(self: *Self, expr: CompiledExprStack, comptime register: []const u8) ![]const u8 {
+    const register_size: u32 = if (expr.size <= 4) 4 else 8;
+    const reg = _get_regiter_based_on_size(register, register_size);
+    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s} \n", .{ expr.offset, reg });
+    return reg;
 }
 
 pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
+    // TODO(shahzad): @bug 64 bits bin ops are fucked :sob:
     const lhs = try self.compile_expr(module, block, bin_op.lhs);
     const rhs = try self.compile_expr(module, block, bin_op.rhs);
     // @TODO(shahzad): @pretty change this to if
 
     var lhs_compiled: []const u8 = undefined;
     var rhs_compiled: []const u8 = undefined;
-    var ret: CompiledExpression = undefined;
     switch (bin_op.op) {
         .Add => {
+            var ret: CompiledExpression = undefined;
             switch (lhs) {
                 .LitInt => |expr| {
-                    const register = _get_regiter_based_on_size("a", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    const register = try self.load_int_literal_to_register(expr, "a");
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Var => |expr| {
-                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
-                    const register = _get_regiter_based_on_size("a", register_size);
-                    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s} \n", .{ expr.offset, register });
+                    const register = try self.load_variable_to_register(expr, "a");
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Register, .Call => |expr| {
@@ -215,14 +232,12 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
 
             switch (rhs) {
                 .LitInt => |expr| {
-                    const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    const register = try self.load_int_literal_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Var => |expr| {
-                    const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s}\n", .{ expr.offset, register });
+                    const register = try self.load_variable_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
@@ -239,43 +254,76 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             return ret;
         },
         .Ass => {
+            var ret: CompiledExpression = undefined;
             switch (lhs) {
                 .Var => |expr| {
                     _ = try self.program_builder.append_fmt("   leaq -{}(%rbp), %rax\n", .{expr.offset});
                     lhs_compiled = try self.scratch_buffer.append_fmt("(%rax)", .{});
-                    ret = .{ .Register = .{ .expr = "rax", .size = 8 } };
+                    ret = .{ .Var = .{ .offset = expr.offset, .size = expr.size } };
                 },
                 else => unreachable, // we don't give a shit as of now
             }
             // lhs is memory pointer so if you don't put rhs in register it requires a size mnemonic
             switch (rhs) {
                 .LitInt => |expr| {
-                    const register = _get_regiter_based_on_size("d", expr.size);
-                    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, register });
+                    const register = try self.load_int_literal_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    ret = .{ .Register = .{ .expr = register, .size = expr.size } };
                 },
                 .Var => |expr| {
-                    const register_size: u32 = if (expr.size <= 4) 4 else 8;
-                    const register = _get_regiter_based_on_size("d", register_size);
-                    _ = try self.program_builder.append_fmt("   mov - {}(%rbp), ${s}\n", .{ expr.offset, register });
+                    const register = try self.load_variable_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    ret = .{ .Register = .{ .expr = register, .size = register_size } };
                 },
                 .LitStr => |expr| {
                     const register = _get_regiter_based_on_size("d", 8);
-                    _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr,register });
+                    _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
-                .Register,
-                .Call,
-                => |expr| {
+                .Register, .Call => |expr| {
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
             }
             _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
             self.scratch_buffer.reset();
-            return .{ .Register = .{ .expr = "assignmente cannot resolve to a type", .size = 100000 } };
+            return ret;
+        },
+        .Eq => {
+            switch (lhs) {
+                .Var => |expr| {
+                    const register = try self.load_variable_to_register(expr, "a");
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                },
+                .LitInt => |expr| {
+                    const register = try self.load_int_literal_to_register(expr, "a");
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                },
+                .Register, .Call => |expr| {
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
+                },
+                .LitStr => unreachable,
+            }
+
+            switch (rhs) {
+                .Var => |expr| {
+                    const register = try self.load_variable_to_register(expr, "d");
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                },
+                .LitInt => |expr| {
+                    const register = try self.load_int_literal_to_register(expr, "d");
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                },
+                .Register, .Call => |expr| {
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
+                },
+                .LitStr => unreachable,
+            }
+
+            _ = try self.program_builder.append_fmt("   cmpl {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+            _ = try self.program_builder.append_fmt("   sete %dl\n", .{});
+            self.scratch_buffer.reset();
+            // NOTE(shahzad): @bug we expect that any op with respect to a comparison has to be
+            // 32 bits wide is not always the case
+            _ = try self.program_builder.append_fmt("   movzbl %dl, %edx\n", .{});
+            return .{ .Register = .{ .expr = "edx", .size = 4 } };
         },
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }

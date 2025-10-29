@@ -184,8 +184,12 @@ pub const Parser = struct {
 
         while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
             const statement = try self.parse_stmt();
-            if (statement == .Expr and statement.Expr == .Block) {
-                statement.Expr.Block.outer = block;
+            switch (statement) {
+                .Expr => |*expr| {
+                    if (expr.* == .Block) expr.Block.outer = block;
+                    if (expr.* == .IfCondition) expr.IfCondition.block.outer = block;
+                },
+                else => {},
             }
             try statements.append(statement);
             std.log.debug("{}\n", .{statement});
@@ -277,7 +281,7 @@ pub const Parser = struct {
                 const expr_duped = try self.allocator.create(Ast.Expression);
                 expr_duped.* = expr;
 
-                return .{ .Expr = .{ .IfCondition = .{ .condition = expr_duped, .block = block, .label = undefined } } };
+                return .{ .Expr = .{ .IfCondition = .{ .condition = expr_duped, .block = block } } };
             },
             .Return => {
                 self.tokens.advance(1);

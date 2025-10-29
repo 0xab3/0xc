@@ -1,13 +1,13 @@
 pub const CompiledExpression = union(enum) {
-    const CompiledExpCommon = struct {
+    pub const CompiledExpCommon = struct {
         expr: []const u8,
         size: u32,
     };
-    const CompiledExprStack = struct {
+    pub const CompiledExprStack = struct {
         offset: usize,
         size: u32,
     };
-    const CompiledExprLiteral = struct {
+    pub const CompiledExprLiteral = struct {
         literal: u64,
         size: u32,
     };

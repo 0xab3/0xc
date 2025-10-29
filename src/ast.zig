@@ -21,6 +21,7 @@ pub const Module = struct {
     blocks: std.mem.Allocator = undefined,
     proc_decls: ArrayListManaged(ProcDecl),
     proc_defs: ArrayListManaged(ProcDef),
+    total_if_conditions: usize, // for label generation
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
@@ -30,6 +31,7 @@ pub const Module = struct {
             .proc_decls = .init(allocator),
             .context = context,
             .string_literals = .init(allocator),
+            .total_if_conditions = 0,
             .arena = .init(allocator),
         };
         self.blocks = self.arena.allocator();
@@ -109,7 +111,6 @@ pub const Block = struct {
     }
 };
 pub const IfCondition = struct {
-    label: []const u8,
     condition: *Expression,
     block: *Block,
 };

@@ -1,0 +1,12 @@
+proc printf(fmt: ^x8) -> void;
+proc main() -> void {
+  let a: x32 = 20;
+  let b: x32 = 10;
+  let c: x32 = 20;
+  if a == b + 10 {
+    printf("a is b\n");
+  }
+  if a == c {
+    printf("a is c\n");
+  }
+}
