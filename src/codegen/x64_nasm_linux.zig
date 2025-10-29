@@ -153,9 +153,8 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             return .{ .Register = .{ .expr = "assignment from compiled block is not implemented!", .size = 8 } };
         },
         .IfCondition => |if_condition| {
-            module.total_if_conditions += 1;
-            const n_branch = module.total_if_conditions;
-
+            module.total_branches += 1;
+            const n_branch = module.total_branches;
 
             var label: [32]u8 = undefined;
             const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
@@ -163,12 +162,32 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             const compiled_expr = try self.compile_expr(module, block, if_condition.condition);
             switch (compiled_expr) {
                 .Register => {
-                    _ = try self.program_builder.append_fmt("   jnz {s}\n", .{label_fmt});
+                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{label_fmt});
                 },
                 else => unreachable,
             }
             _ = try self.compile_block(module, if_condition.block);
             _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
+            return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
+        },
+        .WhileLoop => |while_loop| {
+            module.total_branches += 1;
+            const n_branch = module.total_branches;
+
+            var label: [32]u8 = undefined;
+            const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
+            _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
+
+            _ = try self.compile_block(module, while_loop.block);
+            const compiled_expr = try self.compile_expr(module, block, while_loop.condition);
+
+            switch (compiled_expr) {
+                .Register => {
+                    _ = try self.program_builder.append_fmt("   jnz {s}\n", .{label_fmt});
+                },
+                else => unreachable,
+            }
+
             return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
         },
         // @TODO(shahzad): figure out what to do with this shit
@@ -202,6 +221,13 @@ pub fn load_variable_to_register(self: *Self, expr: CompiledExprStack, comptime 
     return reg;
 }
 
+fn get_compare_store_inst_based_on_op(bin_op: *const Ast.BinaryOperation) []const u8 {
+    switch (bin_op.op) {
+        .Eq => return "sete",
+        .Lt => return "setl",
+        else => @panic("unimplemented!"),
+    }
+}
 pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
     // TODO(shahzad): @bug 64 bits bin ops are fucked :sob:
     const lhs = try self.compile_expr(module, block, bin_op.lhs);
@@ -286,7 +312,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             self.scratch_buffer.reset();
             return ret;
         },
-        .Eq => {
+        .Eq, .Lt => {
             switch (lhs) {
                 .Var => |expr| {
                     const register = try self.load_variable_to_register(expr, "a");
@@ -318,13 +344,17 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             }
 
             _ = try self.program_builder.append_fmt("   cmpl {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
-            _ = try self.program_builder.append_fmt("   sete %dl\n", .{});
+            const cmp_inst = get_compare_store_inst_based_on_op(bin_op);
+            _ = try self.program_builder.append_fmt("   {s} %dl\n", .{cmp_inst});
+            _ = try self.program_builder.append_fmt("   test %dl, %dl\n", .{});
+
             self.scratch_buffer.reset();
             // NOTE(shahzad): @bug we expect that any op with respect to a comparison has to be
             // 32 bits wide is not always the case
             _ = try self.program_builder.append_fmt("   movzbl %dl, %edx\n", .{});
             return .{ .Register = .{ .expr = "edx", .size = 4 } };
         },
+
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }
 }

@@ -32,6 +32,8 @@ const PrimitiveTypes = [_]struct { []const u8, u16 }{
 
     .{ "s64", 8 },
     .{ "x64", 8 },
+
+    .{ "bool", 1 },
 };
 
 pub fn init(allocator: Allocator, context: SourceContext) Self {
@@ -129,6 +131,44 @@ pub fn can_type_resolve(concrete_: ?Ast.ExprType, abstract_: ?Ast.ExprType) bool
     if (concrete_size >= abstract_size and concrete[0] == abstract[0]) return true; // don't break signed numbers and only cast to bigger size
     return false;
 }
+pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op_expr: Ast.BinaryOperation) anyerror!Ast.ExprType {
+    const asignee_type = try self.type_check_expr(module, block, bin_op_expr.lhs);
+    if (is_type_int_lit(asignee_type)) {
+        const int_lit = asignee_type.info.int_lit;
+        std.debug.print("asignee_type int_literal, literal: {}\n", .{int_lit});
+    } else std.debug.print("asignee_type {}\n", .{asignee_type});
+
+    const asigner_type = try self.type_check_expr(module, block, bin_op_expr.rhs);
+    if (is_type_int_lit(asigner_type)) {
+        const int_lit = asigner_type.info.int_lit;
+        std.debug.print("asigner_type int_literal, literal: {}\n", .{int_lit});
+    } else std.debug.print("asigner_type {}\n", .{asigner_type});
+
+    if (!can_type_resolve(asignee_type, asigner_type)) {
+        std.log.err("unable to resolve type {} to {}\n", .{ asigner_type, asignee_type });
+        return error.TypeMisMatch;
+    }
+    const return_type =
+        if (try get_size_for_type(asignee_type) > try get_size_for_type(asigner_type))
+            asignee_type
+        else
+            asigner_type;
+    if (is_type_int_lit(return_type)) {
+        const int_lit = return_type.info.int_lit;
+        std.debug.print("BinOP returning int_literal literal: {}\n", .{int_lit});
+    } else std.debug.print("BinOP returning {}\n", .{return_type});
+    return return_type;
+}
+
+fn is_expr_valid_lhs(expr: *Ast.Expression) bool {
+    switch (expr.*) {
+        .Var => return true,
+        .BinOp => @panic("can bin op be lhs??"),
+        .Call, .Block, .IfCondition, .WhileLoop, .LiteralInt, .LiteralString, .NoOp, .Tuple => {
+            return false;
+        },
+    }
+}
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
 pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *const Ast.Expression) !Ast.ExprType {
     //@TODO(shahzad): this is ass brother please fix it
@@ -146,32 +186,22 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         },
         .BinOp => |expr_as_bin_op| {
             // @NOTE(shahzad)!!: PRECEDENCE IS REQUIRED FOR TYPE CHECKING TO PROPERLY WORK!!!!
-            const asignee_type = try self.type_check_expr(module, block, expr_as_bin_op.lhs);
-            if (is_type_int_lit(asignee_type)) {
-                const int_lit = asignee_type.info.int_lit;
-                std.debug.print("asignee_type int_literal, literal: {}\n", .{int_lit});
-            } else std.debug.print("asignee_type {}\n", .{asignee_type});
-
-            const asigner_type = try self.type_check_expr(module, block, expr_as_bin_op.rhs);
-            if (is_type_int_lit(asigner_type)) {
-                const int_lit = asigner_type.info.int_lit;
-                std.debug.print("asigner_type int_literal, literal: {}\n", .{int_lit});
-            } else std.debug.print("asigner_type {}\n", .{asigner_type});
-
-            if (!can_type_resolve(asignee_type, asigner_type)) {
-                std.log.err("unable to resolve type {} to {}\n", .{ asigner_type, asignee_type });
-                return error.TypeMisMatch;
+            switch (expr_as_bin_op.op) {
+                .Add, .Sub, .Div, .Mul => {
+                    return try self.type_check_bin_op(module, block, expr_as_bin_op);
+                },
+                .Lt, .LtEq, .Gt, .GtEq, .Eq => {
+                    // TODO(shahzad): we don't return bool for Eq variant
+                    return try self.type_check_bin_op(module, block, expr_as_bin_op);
+                },
+                .Ass, .AddAss, .DivAss, .MulAss, .SubAss => {
+                    if (!is_expr_valid_lhs(expr_as_bin_op.lhs)) {
+                        std.log.err("{s}:{}:{}: type {} cannot be assigned to {}\n", .{ self.context.filename, 0, 0, expr_as_bin_op.lhs, expr_as_bin_op.rhs });
+                        return Error.TypeMisMatch;
+                    }
+                    return try self.type_check_bin_op(module, block, expr_as_bin_op);
+                },
             }
-            const return_type =
-                if (try get_size_for_type(asignee_type) > try get_size_for_type(asigner_type))
-                    asignee_type
-                else
-                    asigner_type;
-            if (is_type_int_lit(return_type)) {
-                const int_lit = return_type.info.int_lit;
-                std.debug.print("BinOP returning int_literal literal: {}\n", .{int_lit});
-            } else std.debug.print("BinOP returning {}\n", .{return_type});
-            return return_type;
         },
         .LiteralString => |str_lit| {
             try module.string_literals.append(.{ .string = str_lit, .label = undefined });
@@ -212,12 +242,22 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
             return .{ .type = IntLiteralType, .info = .{ .int_lit = expr_as_int_lit } };
         },
         .IfCondition => |if_block| {
-            _ = if_block;
             // is the block.stack_var_offset set atp?? cause we will need it for initializing the
             // if block
-            unreachable;
-            // _ = try self.type_check_expr(module, block, if_block.condition);
-            // return try self.type_check_block(module, if_block.block, );
+            _ = try self.type_check_expr(module, block, if_block.condition);
+            return try self.type_check_block(
+                module,
+                if_block.block,
+                block.stack_var_offset,
+            );
+        },
+        .WhileLoop => |while_loop| {
+            _ = try self.type_check_expr(module, block, while_loop.condition);
+            return try self.type_check_block(
+                module,
+                while_loop.block,
+                block.stack_var_offset,
+            );
         },
         // else => |unhandled| {
         //     std.log.err("type_check_expr is not implemented for {}\n", .{unhandled});

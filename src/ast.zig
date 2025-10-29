@@ -21,7 +21,7 @@ pub const Module = struct {
     blocks: std.mem.Allocator = undefined,
     proc_decls: ArrayListManaged(ProcDecl),
     proc_defs: ArrayListManaged(ProcDef),
-    total_if_conditions: usize, // for label generation
+    total_branches: usize, // for label generation
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
     pub fn init(self: *Self, allocator: Allocator, context: SourceContext) void {
@@ -31,7 +31,7 @@ pub const Module = struct {
             .proc_decls = .init(allocator),
             .context = context,
             .string_literals = .init(allocator),
-            .total_if_conditions = 0,
+            .total_branches = 0,
             .arena = .init(allocator),
         };
         self.blocks = self.arena.allocator();
@@ -110,7 +110,7 @@ pub const Block = struct {
         return null;
     }
 };
-pub const IfCondition = struct {
+pub const ConditionalBlock = struct {
     condition: *Expression,
     block: *Block,
 };
@@ -123,7 +123,8 @@ pub const Expression = union(enum) {
     LiteralString: []const u8,
     Call: ProcCall,
     Tuple: ArrayListManaged(Expression),
-    IfCondition: IfCondition,
+    IfCondition: ConditionalBlock,
+    WhileLoop: ConditionalBlock,
     Block: *Block,
     BinOp: BinaryOperation,
 };

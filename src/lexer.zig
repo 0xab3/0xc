@@ -17,6 +17,7 @@ const keywords = [_]struct { []const u8, TokenKind }{
     .{ "return", .Return },
     .{ "if", .If },
     .{ "else", .Else },
+    .{ "while", .While },
 };
 
 // @TODO(shahzad): this should be a common thingy
@@ -132,6 +133,7 @@ pub const TokenKind = union(enum) {
                 break :blk .{ literal.len + 1, .{ .LiteralString = literal[0 .. literal.len - 1] } };
             },
             '!' => .{ 1, .Not },
+            '<' => .{ 1, .{ .Op = .Lt } },
 
             else => {
                 std.log.err("unidentified token \"{c}\"\n", .{tok[0]});

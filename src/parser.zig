@@ -174,6 +174,17 @@ pub const Parser = struct {
         return param_defs;
     }
 
+    fn set_outer_if_type_contains_block(expr: *const Ast.Expression, outer: *Ast.Block) void {
+        switch (expr.*) {
+            .Block => |*block| {
+                block.*.outer = outer;
+            },
+            .IfCondition, .WhileLoop => |*condition| {
+                condition.block.outer = outer;
+            },
+            .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp => {},
+        }
+    }
     fn parse_block(self: *Self) anyerror!*Ast.Block {
         _ = try self.expect(.CurlyOpen, null);
 
@@ -185,11 +196,16 @@ pub const Parser = struct {
         while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
             const statement = try self.parse_stmt();
             switch (statement) {
-                .Expr => |*expr| {
-                    if (expr.* == .Block) expr.Block.outer = block;
-                    if (expr.* == .IfCondition) expr.IfCondition.block.outer = block;
+                .VarDefStackMut, .VarDefStack => |var_def| {
+                    set_outer_if_type_contains_block(&var_def.expr, block);
                 },
-                else => {},
+                .Expr => {
+                    set_outer_if_type_contains_block(&statement.Expr, block);
+                },
+                .Return => {
+                    @panic("this is unimplemented!");
+                },
+                else => unreachable,
             }
             try statements.append(statement);
             std.log.debug("{}\n", .{statement});
@@ -282,6 +298,17 @@ pub const Parser = struct {
                 expr_duped.* = expr;
 
                 return .{ .Expr = .{ .IfCondition = .{ .condition = expr_duped, .block = block } } };
+            },
+            .While => {
+                _ = self.tokens.consume();
+                // parse the condition
+                const expr = try self.parse_expr();
+                const block = try self.parse_block();
+
+                const expr_duped = try self.allocator.create(Ast.Expression);
+                expr_duped.* = expr;
+
+                return .{ .Expr = .{ .WhileLoop = .{ .condition = expr_duped, .block = block } } };
             },
             .Return => {
                 self.tokens.advance(1);
