@@ -1,0 +1,35 @@
+plex Color {
+  r: x8,
+  g: x8,
+  b: x8,
+  a: x8,
+}
+
+proc InitWindow(width: x32, height: x32, title: ^x8) -> void;
+proc IsKeyPressed(key: x32) -> x8;
+proc WindowShouldClose() -> x8;
+proc CloseWindow() -> void;
+proc ClearBackground(color: Color) -> void;
+proc BeginDrawing() -> void;
+proc EndDrawing() -> void;
+proc printf(fmt: ^x8) -> void;
+
+proc main() -> void {
+  let RED: Color = Color {255, 0, 0, 255};
+  InitWindow(800, 600, "raylib speedrun");
+
+  // this doesn't have precedence that's why i have to do this :sob:
+  let should_window_close: x8 = WindowShouldClose();
+
+  while should_window_close == 0 {
+    should_window_close = WindowShouldClose();
+
+    if IsKeyPressed(81) {
+      CloseWindow();
+    }
+
+    BeginDrawing();
+    ClearBackground(RED);
+    EndDrawing();
+  }
+}

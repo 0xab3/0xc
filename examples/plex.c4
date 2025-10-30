@@ -1,0 +1,13 @@
+plex Color {
+  r: x8,
+  g: x8,
+  b: x8,
+  a: x8,
+}
+
+proc print_color(color: Color) -> void;
+proc main() -> void {
+  let color: Color =  Color {10,20,30,40};
+  print_color(color);
+
+}
