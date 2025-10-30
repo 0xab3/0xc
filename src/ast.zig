@@ -21,6 +21,8 @@ pub const Module = struct {
     blocks: std.mem.Allocator = undefined,
     proc_decls: ArrayListManaged(ProcDecl),
     proc_defs: ArrayListManaged(ProcDef),
+    plex_decl: ArrayListManaged(PlexDecl),
+    // TODO(shahzad): @feat add field for user defined types
     total_branches: usize, // for label generation
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
@@ -29,6 +31,7 @@ pub const Module = struct {
             .allocator = allocator,
             .proc_defs = .init(allocator),
             .proc_decls = .init(allocator),
+            .plex_decl = .init(allocator),
             .context = context,
             .string_literals = .init(allocator),
             .total_branches = 0,
@@ -62,6 +65,14 @@ pub const Module = struct {
             proc_decl = proc_def.?.decl;
         }
         return proc_decl;
+    }
+    pub fn get_plex_decl(self: *const Self, name: []const u8) ?PlexDecl {
+        for (self.plex_decl.items) |plex_decl| {
+            if (std.mem.eql(u8, plex_decl.name, name)) {
+                return plex_decl;
+            }
+        }
+        return null;
     }
     pub fn find_string_literal(self: *Self, literal: []const u8) StringLiteral {
         for (self.string_literals.items) |it| {
@@ -115,20 +126,40 @@ pub const ConditionalBlock = struct {
     block: *Block,
 };
 // @TODO(shahzad): add source here so we can do error reporting
+
 pub const Expression = union(enum) {
     pub const ProcCall = struct { name: []const u8, params: ArrayListManaged(Expression) };
+    // TODO(shahzad): @feat add reference on plex_defs as r values
+    pub const PlexDef = struct { name: []const u8, members: ArrayListManaged(Expression) };
     NoOp: void,
     Var: []const u8,
     LiteralInt: u64, // this should go away
     LiteralString: []const u8,
     Call: ProcCall,
+    Plex: PlexDef,
     Tuple: ArrayListManaged(Expression),
     IfCondition: ConditionalBlock,
     WhileLoop: ConditionalBlock,
     Block: *Block,
     BinOp: BinaryOperation,
 };
+pub const PlexField = struct {
+    name: []const u8,
+    type: ExprType,
+    expr: Expression,
+    size: u32,
+    offset: u32,
+};
 
+pub const PlexDecl = struct {
+    name: []const u8,
+    size: ?usize, // this is set during the typechecking
+    fields: ArrayListManaged(PlexField),
+    pub fn offset_of(field: []const u8) usize {
+        _ = field;
+        @panic("unimplemented!");
+    }
+};
 // @TODO(shahzad): add source in every field here so we can do error reporting
 pub const Statement = union(enum) {
     VarDefStack: VarDecl,
@@ -157,8 +188,8 @@ pub const VarDecl = struct {
 pub const VarMetaData = struct {
     size: u31,
     is_mut: u1,
-    pub fn init(size: u31, is_mut: bool) @This() {
-        return .{ .size = size, .is_mut = @bitCast(is_mut) };
+    pub fn init(size: usize, is_mut: bool) @This() {
+        return .{ .size = @intCast(size), .is_mut = @bitCast(is_mut) };
     }
 };
 
@@ -168,7 +199,7 @@ pub const StackVar = struct {
     offset: u32,
 
     const Self = @This();
-    pub fn init(self: *Self, name: []const u8, offset: u32, size: u31, @"type": ?ExprType, is_mutable: bool) void {
+    pub fn init(self: *Self, name: []const u8, offset: u32, size: usize, @"type": ?ExprType, is_mutable: bool) void {
         self.* = .{ .decl = .{ .name = name, .type = @"type", .expr = undefined }, .meta = .init(size, is_mutable), .offset = offset };
     }
 };

@@ -13,14 +13,17 @@ const Error = error{
     VariableRedefinition,
     VariableNotDefined,
     ProcedureNotDefined,
+    PlexNotDefined,
     ProcedureCallArgsMismatch,
     TypeMisMatch,
+    RecursiveDeclaration,
 };
+
 //TODO(shahzad): add a formatter here
 // NOTE(shahzad): we use this as IntLiteralType ++ int_literal
 const IntLiteralType = "\x00intlit";
 
-const PrimitiveTypes = [_]struct { []const u8, u16 }{
+const PrimitiveTypes = [_]struct { []const u8, u32 }{
     .{ "s8", 1 },
     .{ "x8", 1 },
 
@@ -39,14 +42,21 @@ const PrimitiveTypes = [_]struct { []const u8, u16 }{
 pub fn init(allocator: Allocator, context: SourceContext) Self {
     return .{ .context = context, .allocator = allocator };
 }
-fn get_size_for_type(@"type": Ast.ExprType) Self.Error!u16 {
+fn get_size_for_user_defined_type(module: *const Ast.Module, @"type": Ast.ExprType) Self.Error!?usize {
+    const plex_decl = module.get_plex_decl(@"type".type);
+    if (plex_decl) |decl| {
+        if (@"type".info.ptr_depth > 0) return 8 else return decl.size;
+    }
+
+    return Error.TypeNotFound;
+}
+fn get_size_for_primitive_type(@"type": Ast.ExprType) Self.Error!usize {
     if (std.mem.eql(u8, @"type".type, IntLiteralType)) {
         return @intCast(get_size_of_int_literal(@"type".info.int_lit));
     }
-    if (@"type".info.ptr_depth > 0) return 8;
-
     for (PrimitiveTypes) |it| {
         if (std.mem.eql(u8, it[0], @"type".type)) {
+            if (@"type".info.ptr_depth > 0) return 8;
             return it[1];
         }
     }
@@ -70,6 +80,34 @@ fn get_unsigned_int_for_size(size: u16) []const u8 {
         }
     }
     unreachable;
+}
+
+pub fn type_check_plex_def_block(self: *Self, module: *Ast.Module, caller_block: *Ast.Block, plex_def: *const Ast.Expression.PlexDef, plex_decl: *const Ast.PlexDecl) bool {
+    const fields = plex_decl.fields;
+    const n_lines, _ = self.context.get_loc(plex_def.name);
+    if (fields.items.len > plex_def.members.items.len) {
+        std.log.err("{s}:{}:{}: too few fields initialized to flex '{s}' expected {}, have {}", .{ self.context.filename, n_lines, 0, plex_def.name, fields.items.len, plex_def.members.items.len });
+        return false;
+    } else if (fields.items.len < plex_def.members.items.len) {
+        std.log.err("@TODO(shahzad): {s}:{}:{}: plex definition '{s}' contains more fields than required!", .{ self.context.filename, n_lines, 0, plex_def.name });
+        return false;
+    }
+    for (fields.items, 0..) |field, idx| {
+        // TODO(shahzad): @feat add designated initialization of fields
+        // easy we can check if expr is binop.Ass and if that's the case then take
+        // the l value and lookup the field that has the same name then we don't
+        // type check the l value and give the r value tree to the type_check_expr
+        const resolved_type = self.type_check_expr(module, caller_block, &plex_def.members.items[idx]) catch {
+            std.log.err("{s}:{}:{}: type of field in plex {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, plex_def.name, idx, field.type.type, "unimplemented" });
+            return false;
+        };
+
+        if (!can_type_resolve(field.type, resolved_type)) {
+            std.log.err("{s}:{}:{}: type of field in flex {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, plex_def.name, idx, field.type.type, resolved_type.type });
+            return false;
+        }
+    }
+    return true;
 }
 
 pub fn type_check_proc_args(self: *Self, module: *Ast.Module, caller_block: *Ast.Block, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
@@ -126,8 +164,8 @@ pub fn can_type_resolve(concrete_: ?Ast.ExprType, abstract_: ?Ast.ExprType) bool
     if (std.mem.eql(u8, concrete, abstract)) {
         return true;
     }
-    const concrete_size = get_size_for_type(concrete_.?) catch return false;
-    const abstract_size = get_size_for_type(abstract_.?) catch return false;
+    const concrete_size = get_size_for_primitive_type(concrete_.?) catch return false;
+    const abstract_size = get_size_for_primitive_type(abstract_.?) catch return false;
     if (concrete_size >= abstract_size and concrete[0] == abstract[0]) return true; // don't break signed numbers and only cast to bigger size
     return false;
 }
@@ -149,7 +187,8 @@ pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bi
         return error.TypeMisMatch;
     }
     const return_type =
-        if (try get_size_for_type(asignee_type) > try get_size_for_type(asigner_type))
+        if ((try self.get_type_size_if_exists(module, &asignee_type)).? >
+        (try self.get_type_size_if_exists(module, &asigner_type)).?)
             asignee_type
         else
             asigner_type;
@@ -164,7 +203,7 @@ fn is_expr_valid_lhs(expr: *Ast.Expression) bool {
     switch (expr.*) {
         .Var => return true,
         .BinOp => @panic("can bin op be lhs??"),
-        .Call, .Block, .IfCondition, .WhileLoop, .LiteralInt, .LiteralString, .NoOp, .Tuple => {
+        .Call, .Block, .IfCondition, .WhileLoop, .LiteralInt, .LiteralString, .NoOp, .Tuple, .Plex => {
             return false;
         },
     }
@@ -210,6 +249,18 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         },
         .Block => |blk| {
             return try self.type_check_block(module, blk, block.stack_var_offset);
+        },
+        .Plex => |plex| {
+            const plex_decl = module.get_plex_decl(plex.name);
+            if (plex_decl == null) {
+                const n_lines, _ = self.context.get_loc(plex.name);
+
+                std.log.err("{s}:{}:{}: use of undefined plex '{s}'", .{ self.context.filename, n_lines, 0, plex.name });
+                self.context.print_loc(plex.name);
+                return Error.PlexNotDefined;
+            }
+            if (self.type_check_plex_def_block(module, block, &plex, &plex_decl.?) == false) return Error.TypeMisMatch;
+            return .{ .type = plex.name, .info = .{ .ptr_depth = 0 } };
         },
 
         .Call => |*expr_as_call| {
@@ -325,10 +376,7 @@ pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, blo
 
         if (statement.* == .VarDefStack or statement.* == .VarDefStackMut) {
             const var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
-            const size = get_size_for_type(var_def.type.?) catch |err| {
-                std.log.debug("user defined types are not supported!", .{});
-                return err;
-            };
+            const size = (try self.get_type_size_if_exists(module, &var_def.type.?)).?;
             block.stack_var_offset += if (size <= 4) 4 else 8;
             var stack_var: Ast.StackVar = undefined;
             stack_var.init(var_def.name, @intCast(block.stack_var_offset), size, var_def.type, statement.* == .VarDefStackMut);
@@ -364,8 +412,47 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
         });
     }
 }
+fn get_type_size_if_exists(self: *Self, module: *const Ast.Module, expr_type: *const Ast.ExprType) Error!?usize {
+    var size: ?usize = get_size_for_primitive_type(expr_type.*) catch null;
+    if (size == null) {
+        const userdefined_size: ?usize = get_size_for_user_defined_type(module, expr_type.*) catch |err| {
+            std.log.err("type '{s}' is not defined\n", .{expr_type.type});
+            self.context.print_loc(expr_type.type);
+            return err;
+        };
+        size = userdefined_size;
+    }
+    return size;
+}
+pub fn type_check_plex_decl(self: *Self, module: *const Ast.Module, plex_decl: *Ast.PlexDecl, outer_plex: ?*Ast.PlexDecl) !void {
+    // TODO(shahzad): @bug type check for recursive Plexes
+
+    var total_field_size: usize = 0;
+    for (plex_decl.fields.items) |*plex_field| {
+        if (outer_plex != null and
+            std.mem.eql(u8, plex_field.type.type, outer_plex.?.name) and
+            plex_field.type.info.ptr_depth == 0)
+        {
+            std.log.err("plex '{s}' is used recursive\n", .{outer_plex.?.name});
+            self.context.print_loc(plex_field.type.type);
+            return Error.RecursiveDeclaration;
+        }
+        var plex_field_size = try self.get_type_size_if_exists(module, &plex_field.type);
+
+        if (plex_field_size == null) {
+            var untyped_plex = module.get_plex_decl(plex_field.type.type);
+            try self.type_check_plex_decl(module, &untyped_plex.?, plex_decl);
+            plex_field_size.? = untyped_plex.?.size.?;
+        }
+        plex_field.size = @intCast(plex_field_size.?);
+
+        total_field_size += plex_field.size;
+    }
+    plex_decl.size = total_field_size;
+}
 pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
     var err = false;
+    // TODO(shahzad): @perf use hashmap or smth idk
     for (0..proc_decl.args_list.items.len) |idx| {
         for (idx..proc_decl.args_list.items.len) |idx2| {
             const arg = &proc_decl.args_list.items[idx];
@@ -388,6 +475,9 @@ pub fn type_check_proc_decl(self: *Self, proc_decl: *Ast.ProcDecl) !void {
 }
 // @TODO(shahzad): typecheck proc calls
 pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
+    for (module.plex_decl.items) |*plex_decl| {
+        try self.type_check_plex_decl(module, plex_decl, null);
+    }
     // @TODO(shahzad): type check declarations only
     for (module.proc_decls.items) |*proc_decl| {
         try self.type_check_proc_decl(proc_decl);

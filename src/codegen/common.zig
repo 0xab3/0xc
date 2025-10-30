@@ -13,8 +13,18 @@ pub const CompiledExpression = union(enum) {
     };
 
     Var: CompiledExprStack,
+    PlexLiteral: void, // compile_plex takes storage as argument so we don't need to pass shit
     LitInt: CompiledExprLiteral,
     LitStr: CompiledExpCommon,
     Register: CompiledExpCommon,
     Call: CompiledExpCommon,
+    // i've piled garbage onto garbage so much that i have to
+    // do the oop :sob: we will have to refactor ts
+    pub fn get_size(self: @This()) u32 {
+        switch (self) {
+            inline .Var, .PlexLiteral => |compiled_expr| return compiled_expr.size,
+            inline .LitInt => |compiled_expr| return compiled_expr.size,
+            inline .LitStr, .Register, .Call => |compiled_expr| return compiled_expr.size,
+        }
+    }
 };

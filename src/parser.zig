@@ -67,6 +67,10 @@ pub const Parser = struct {
                     self.tokens.peek(0).?.print_loc();
                     return error.UnexpectedToken;
                 },
+                .Plex => {
+                    const plex = try self.parse_plex();
+                    try self.module.plex_decl.append(plex);
+                },
                 .Eof => {
                     unreachable;
                 },
@@ -82,6 +86,38 @@ pub const Parser = struct {
         return self.module;
     }
     // parse the procedure and return only the declaration for some use
+    pub fn parse_plex(self: *Self) !Ast.PlexDecl {
+        _ = try self.expect(.Plex, null);
+        const plex_name = try self.expect(.Ident, "plex name");
+        _ = try self.expect(.CurlyOpen, "{");
+
+        var block = ArrayListManaged(Ast.PlexField).init(self.allocator);
+        errdefer block.deinit();
+
+        while (!std.meta.eql(self.tokens.peek(0).?.kind, .CurlyClose)) {
+            const field_name = try self.expect(.Ident, "field name");
+            _ = try self.expect(.Colon, ":");
+
+            var ptr_depth: usize = 0;
+
+            while (self.tokens.peek(0).?.kind == .Pointer) : (self.tokens.advance(1)) {
+                ptr_depth += 1;
+            }
+
+            // TODO(shahzad): @feat add support for default struct fields
+            const type_name = try self.expect(.Ident, "field name");
+            const field_type: Ast.ExprType = .{ .type = type_name.source, .info = .{ .ptr_depth = ptr_depth } };
+
+            if (self.tokens.peek(0).?.kind == .Comma) {
+                self.tokens.advance(1);
+            }
+
+            const plex_field: Ast.PlexField = .{ .name = field_name.source, .type = field_type, .expr = .NoOp, .size = 0, .offset = 0 };
+            _ = try block.append(plex_field);
+        }
+        self.tokens.advance(1); // we got curly close
+        return .{ .name = plex_name.source, .fields = block, .size = null };
+    }
     pub fn parse_proc(self: *Self) !Ast.ProcDecl {
         const proc_decl = self.parse_proc_decl() catch |err| {
             self.tokens.peek(0).?.print_loc();
@@ -144,7 +180,7 @@ pub const Parser = struct {
         token = try self.expect(.Ident, "type");
         const var_type = token.source;
         var arg_def: Ast.Argument = undefined;
-        arg_def.init(var_name, undefined, var_type, ptr_depth, mutable);
+        arg_def.init(var_name, 0, var_type, ptr_depth, mutable);
         return arg_def;
     }
 
@@ -182,7 +218,8 @@ pub const Parser = struct {
             .IfCondition, .WhileLoop => |*condition| {
                 condition.block.outer = outer;
             },
-            .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp => {},
+
+            .Plex, .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp => {},
         }
     }
     fn parse_block(self: *Self) anyerror!*Ast.Block {
@@ -324,11 +361,19 @@ pub const Parser = struct {
             },
         }
     }
-    fn parse_tuple(self: *Self) !ArrayListManaged(Ast.Expression) {
+    fn get_paren_close_for_tok(paren_start: TokenKind) TokenKind {
+        switch (paren_start) {
+            .ParenOpen => return .ParenClose,
+            .CurlyOpen => return .CurlyClose,
+            else => unreachable,
+        }
+    }
+    fn parse_exprs_between(self: *Self, paren_start: TokenKind) !ArrayListManaged(Ast.Expression) {
+        const paren_end = get_paren_close_for_tok(paren_start);
         var params = ArrayListManaged(Ast.Expression).init(self.allocator);
-        _ = try self.expect(.ParenOpen, null);
+        _ = try self.expect(paren_start, null);
         const token_kind = self.tokens.peek(0).?.kind;
-        if (token_kind == .ParenClose) {
+        if (std.meta.eql(token_kind, paren_end)) {
             self.tokens.advance(1);
             return params;
         }
@@ -336,14 +381,15 @@ pub const Parser = struct {
             const expr = try self.parse_expr();
             try params.append(expr);
             const next = self.tokens.peek(0).?;
+            if (std.meta.eql(next.kind, paren_end)) {
+                self.tokens.advance(1);
+                break;
+            }
+
             switch (next.kind) {
                 .Comma => {
                     self.tokens.advance(1);
                     continue;
-                },
-                .ParenClose => {
-                    self.tokens.advance(1);
-                    break;
                 },
                 else => {
                     self.tokens.peek(0).?.print_loc();
@@ -398,6 +444,10 @@ pub const Parser = struct {
         }
         return expr;
     }
+    fn parse_plex_def_fields(self: *Self) anyerror!Ast.Expression.PlexDef {
+        const exprs = try self.parse_exprs_between(.CurlyOpen);
+        return .{ .name = undefined, .members = exprs };
+    }
     fn parse_unit_expr(self: *Self) anyerror!Ast.Expression {
         var expr: Ast.Expression = undefined;
         const token = self.tokens.peek(0);
@@ -412,9 +462,15 @@ pub const Parser = struct {
                     const params = next_parsed.Tuple; // if there is paren open then it has to be tuple
                     expr = .{ .Call = .{ .name = token.?.source, .params = params } };
                 }
+                else if (self.tokens.peek(0).?.kind == .CurlyOpen) {
+                    std.debug.print("{}\n", .{self.tokens.peek(0).?});
+                    var plex_literal = try self.parse_plex_def_fields();
+                    plex_literal.name = token.?.source;
+                    expr = .{ .Plex = plex_literal };
+                }
             },
             .ParenOpen => {
-                const tuple = try self.parse_tuple(); // we don't skip the token here as it is '('
+                const tuple = try self.parse_exprs_between(.ParenOpen); // we don't skip the token here as it is '('
                 expr = .{ .Tuple = tuple };
             },
             .LiteralInt => {
@@ -428,6 +484,8 @@ pub const Parser = struct {
             .CurlyOpen => {
                 expr = .{ .Block = try self.parse_block() };
             },
+            .ParenClose, .CurlyClose => expr = .NoOp,
+
             // @TODO(shahzad): i don't think we need this anymore
             // .Semi, .ParenClose => {
             //     expr = .NoOp;
@@ -451,6 +509,7 @@ pub const Parser = struct {
             return token.?;
         } else {
             std.log.debug("expected {s} but got {s}", .{ context orelse expected.to_str(), token.?.kind.to_str() });
+            token.?.print_loc();
 
             return Ast.Error.UnexpectedToken;
         }

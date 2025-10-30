@@ -37,9 +37,11 @@ pub fn populate(self: *Self) !void {
         } else if (std.mem.eql(u8, flag.?, "-l")) {
             // TODO(shahzad): only works with relative paths :sob:
             // TODO(shahzad): this is ass :sob:
-            const name = iter.next();
-            _ = try std.fs.cwd().statFile(name.?);
-            try self.link_object_filename.append(name.?);
+            while (true) {
+                const name = iter.next();
+                if (name == null) break;
+                try self.link_object_filename.append(name.?);
+            }
         }
 
         flag = iter.next();

@@ -12,6 +12,27 @@ program_builder: StringBuilder,
 scratch_buffer: StringBuilder,
 string_arena: StringBuilder,
 const Self = @This();
+pub const Storage = struct {
+    pub const Type = enum { Stack, CallArg };
+    storage_type: Type,
+    offset: u64,
+    pub fn init(storage_type: Type, offset: u64) Storage {
+        return .{ .storage_type = storage_type, .offset = offset };
+    }
+    pub fn get_next(self: *Storage, scratch_buffer: *StringBuilder, size: u8) ![]const u8 {
+        assert(1 <= size and size <= 8);
+        switch (self.storage_type) {
+            .Stack => {
+                const prev_offset = self.offset;
+                self.offset -= size;
+                return try scratch_buffer.append_fmt("-{}(%rbp)", .{prev_offset});
+            },
+            .CallArg => {
+                unreachable;
+            },
+        }
+    }
+};
 
 pub fn init(allocator: Allocator) Self {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -77,10 +98,57 @@ pub fn get_size_of_int_literal(int_literal: u64) u32 {
     const n_bytes: u16 = std.math.divCeil(u16, @intCast(n_bits), 8) catch unreachable;
     return n_bytes;
 }
-// generate code here and return the ident that specifies the location?
-// for the variable
-// @TODO(shahzad): this is shitty idea but by default we just put anything we've compiled to rax
-pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *const Ast.Expression) !CompiledExpression {
+pub fn get_inst_postfix_based_on_size(size: u8) []const u8 {
+    return switch (size) {
+        1 => "b",
+        2 => "w",
+        4 => "l",
+        8 => "q",
+        else => unreachable,
+    };
+}
+pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *const Ast.Expression.PlexDef, storage: *Storage) anyerror!void {
+    if (storage.storage_type == .CallArg) @panic("we are cooked");
+    const plex_decl = module.get_plex_decl(plex.name);
+    for (plex.members.items, 0..) |*member, i| {
+        const compiled_expr = try self.compile_expr(module, block, member, storage);
+        // TODO(shahzad): @bug recursive plex compilation
+        const field_size: u8 = @intCast(plex_decl.?.fields.items[i].size);
+        const byte_storage = try storage.get_next(&self.scratch_buffer, field_size);
+        const postfix = get_inst_postfix_based_on_size(field_size);
+        var lhs_compiled: []const u8 = undefined;
+        switch (compiled_expr) {
+            .Var => |expr| {
+                var register = try self.load_variable_to_register(expr, "d");
+                if (field_size < expr.size) {
+                    const smol_register = try self.load_variable_to_register(expr, "d");
+                    _ = try self.program_builder.append_fmt("   movz{s}l %{s}, %{s}", .{ postfix, smol_register, register });
+                    register = smol_register;
+                }
+                lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+            },
+            .LitInt => |expr| {
+                lhs_compiled = try self.scratch_buffer.append_fmt("${}", .{expr.literal});
+            },
+            .Register, .Call => |expr| {
+                lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
+            },
+            .LitStr => |expr| {
+                std.debug.print("field_size {}\n", .{field_size});
+                assert(field_size == 8);
+                const register = _get_regiter_based_on_size("d", 8);
+                _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
+                lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+            },
+            // TODO(shahzad): this should be that hard but i am tired as shit
+            .PlexLiteral => @panic("recursive plex literals are not supported as of now"),
+        }
+        _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ postfix, lhs_compiled, byte_storage });
+    }
+}
+
+// TODO(shahzad): generate code here and return the ident that specifies the location?
+pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *const Ast.Expression, storage: ?*Storage) anyerror!CompiledExpression {
     switch (expr.*) {
         .LiteralInt => |expr_as_int_lit| {
             const int_lit_size: u32 = if (get_size_of_int_literal(expr_as_int_lit) <= 4) 4 else 8;
@@ -97,11 +165,18 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
 
             return .{ .Var = .{ .offset = stack_offset, .size = stack_var.?.meta.size } };
         },
+        .Plex => |plex| {
+            assert(storage != null);
+            try self.compile_plex(module, block, &plex, storage.?);
+            // TODO(shahzad): @bug support struct literals initialization
+            return .PlexLiteral;
+        },
         .Call => |call_expr| {
             // @TODO(shahzad)!!!!!: we don't support any function with arity more than one
 
             for (call_expr.params.items, 0..) |param_expr, idx| {
-                const expr_compiled_to_reg = try self.compile_expr(module, block, &param_expr);
+                var local_storage: Storage = .init(.CallArg, 0);
+                const expr_compiled_to_reg = try self.compile_expr(module, block, &param_expr, storage orelse &local_storage);
 
                 switch (expr_compiled_to_reg) {
                     .LitInt => |compiled_expr| {
@@ -126,6 +201,9 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                             unreachable; // unimplemented
                             // _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
                         }
+                    },
+                    .PlexLiteral => {
+                        unreachable;
                     },
                 }
             }
@@ -159,12 +237,21 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             var label: [32]u8 = undefined;
             const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
 
-            const compiled_expr = try self.compile_expr(module, block, if_condition.condition);
+            const compiled_expr = try self.compile_expr(module, block, if_condition.condition, null);
             switch (compiled_expr) {
-                .Register => {
+                .Register => |reg| {
+                    _ = try self.program_builder.append_fmt("   test %{s}, %{s}\n", .{ reg.expr, reg.expr });
                     _ = try self.program_builder.append_fmt("   jz {s}\n", .{label_fmt});
                 },
-                else => unreachable,
+                .Call => {
+                    _ = try self.program_builder.append_fmt("   test %rax, %rax\n", .{});
+                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{label_fmt});
+                },
+
+                else => {
+                    std.debug.print("{} is not supported while compiling if conditions\n", .{compiled_expr});
+                    unreachable;
+                },
             }
             _ = try self.compile_block(module, if_condition.block);
             _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
@@ -179,10 +266,15 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
 
             _ = try self.compile_block(module, while_loop.block);
-            const compiled_expr = try self.compile_expr(module, block, while_loop.condition);
+            const compiled_expr = try self.compile_expr(module, block, while_loop.condition, null);
 
             switch (compiled_expr) {
-                .Register => {
+                .Register => |reg| {
+                    _ = try self.program_builder.append_fmt("   test %{s}, %{s}\n", .{ reg.expr, reg.expr });
+                    _ = try self.program_builder.append_fmt("   jnz {s}\n", .{label_fmt});
+                },
+                .Call => {
+                    _ = try self.program_builder.append_fmt("   test %rax, %rax\n", .{});
                     _ = try self.program_builder.append_fmt("   jnz {s}\n", .{label_fmt});
                 },
                 else => unreachable,
@@ -193,7 +285,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
         // @TODO(shahzad): figure out what to do with this shit
         .Tuple => {},
         .BinOp => |*expr_as_bin_op| {
-            return try self.compile_expr_bin_op(module, block, expr_as_bin_op);
+            return try self.compile_expr_bin_op(module, block, expr_as_bin_op, storage);
         },
     }
     unreachable;
@@ -228,10 +320,10 @@ fn get_compare_store_inst_based_on_op(bin_op: *const Ast.BinaryOperation) []cons
         else => @panic("unimplemented!"),
     }
 }
-pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation) anyerror!CompiledExpression {
+pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation, storage: ?*Storage) anyerror!CompiledExpression {
     // TODO(shahzad): @bug 64 bits bin ops are fucked :sob:
-    const lhs = try self.compile_expr(module, block, bin_op.lhs);
-    const rhs = try self.compile_expr(module, block, bin_op.rhs);
+    const lhs = try self.compile_expr(module, block, bin_op.lhs, storage);
+    const rhs = try self.compile_expr(module, block, bin_op.rhs, storage);
     // @TODO(shahzad): @pretty change this to if
 
     var lhs_compiled: []const u8 = undefined;
@@ -251,7 +343,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                 .Register, .Call => |expr| {
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
-                .LitStr => {
+                .LitStr, .PlexLiteral => {
                     unreachable;
                 },
             }
@@ -271,7 +363,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                     ret = .{ .Register = .{ .expr = expr.expr, .size = expr.size } };
                 },
-                .LitStr => {
+                .LitStr, .PlexLiteral => {
                     unreachable;
                 },
             }
@@ -281,10 +373,11 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
         },
         .Ass => {
             var ret: CompiledExpression = undefined;
+            var lhs_size: u32 = 0;
             switch (lhs) {
                 .Var => |expr| {
-                    _ = try self.program_builder.append_fmt("   leaq -{}(%rbp), %rax\n", .{expr.offset});
-                    lhs_compiled = try self.scratch_buffer.append_fmt("(%rax)", .{});
+                    lhs_size = if (expr.size <= 4) 4 else 8;
+                    lhs_compiled = try self.scratch_buffer.append_fmt("-{}(%rbp)", .{expr.offset});
                     ret = .{ .Var = .{ .offset = expr.offset, .size = expr.size } };
                 },
                 else => unreachable, // we don't give a shit as of now
@@ -304,11 +397,25 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
-                .Register, .Call => |expr| {
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
+                .PlexLiteral => {
+                    // TODO(shahzad): @bug bin op assignment is not implemented
+                    // NOTE(shahzad): @hack clear the rax filled for lhs
+                    _ = try self.program_builder.append_fmt("   xor %rax,%rax # fix this hack\n", .{});
+                    self.scratch_buffer.reset();
+                    return .PlexLiteral;
+                },
+                .Register, .Call => |expr| blk: {
+                    if (lhs_size == 4) {
+                        _ = try self.program_builder.append_fmt("   mov %eax, %eax\n", .{});
+                        rhs_compiled = try self.scratch_buffer.append_fmt("%eax", .{});
+                        break :blk;
+                    }
+                    rhs_compiled = try self.scratch_buffer.append_fmt("{s}", .{expr.expr});
                 },
             }
-            _ = try self.program_builder.append_fmt("   mov {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+
+            const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
+            _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ lhs_mnemonic, rhs_compiled, lhs_compiled });
             self.scratch_buffer.reset();
             return ret;
         },
@@ -325,7 +432,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                 .Register, .Call => |expr| {
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
-                .LitStr => unreachable,
+                .LitStr, .PlexLiteral => unreachable,
             }
 
             switch (rhs) {
@@ -340,13 +447,12 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                 .Register, .Call => |expr| {
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
                 },
-                .LitStr => unreachable,
+                .LitStr, .PlexLiteral => unreachable,
             }
 
             _ = try self.program_builder.append_fmt("   cmpl {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
             const cmp_inst = get_compare_store_inst_based_on_op(bin_op);
             _ = try self.program_builder.append_fmt("   {s} %dl\n", .{cmp_inst});
-            _ = try self.program_builder.append_fmt("   test %dl, %dl\n", .{});
 
             self.scratch_buffer.reset();
             // NOTE(shahzad): @bug we expect that any op with respect to a comparison has to be
@@ -369,11 +475,13 @@ pub fn compile_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stateme
                     .lhs = &var_as_expr,
                     .rhs = &rhs_as_expr,
                 };
-                _ = try self.compile_expr_bin_op(module, block, &bin_op_expr);
+                const stack_var = block.find_variable(stmt.name);
+                var storage: Storage = .init(.Stack, stack_var.?.offset);
+                _ = try self.compile_expr_bin_op(module, block, &bin_op_expr, &storage);
             }
         },
         .Expr => |*stmt_as_expr| {
-            _ = try self.compile_expr(module, block, stmt_as_expr);
+            _ = try self.compile_expr(module, block, stmt_as_expr, null);
         },
         else => {},
     }

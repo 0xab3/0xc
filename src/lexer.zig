@@ -18,6 +18,7 @@ const keywords = [_]struct { []const u8, TokenKind }{
     .{ "if", .If },
     .{ "else", .Else },
     .{ "while", .While },
+    .{"plex", .Plex},
 };
 
 // @TODO(shahzad): this should be a common thingy
@@ -69,6 +70,7 @@ pub const TokenKind = union(enum) {
     Else: void,
     While: void,
     For: void,
+    Plex: void,
     Not: void,
 
     Return: void,
@@ -170,6 +172,7 @@ pub const TokenKind = union(enum) {
             .CurlyOpen => "{",
             .CurlyClose => "}",
             .Arrow => "->",
+            .Plex => "plex",
             .Semi => ";",
             .Colon => ":",
             .Comma => ",",
