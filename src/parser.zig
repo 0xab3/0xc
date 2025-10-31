@@ -448,23 +448,36 @@ pub const Parser = struct {
         const exprs = try self.parse_exprs_between(.CurlyOpen);
         return .{ .name = undefined, .members = exprs };
     }
+    fn is_ident_proc_name(self: *Self, ident: []const u8) bool {
+        // useless
+        if (self.module.get_proc(ident)) |proc| return std.mem.eql(u8, proc.name, ident);
+        return false;
+    }
     fn parse_unit_expr(self: *Self) anyerror!Ast.Expression {
         var expr: Ast.Expression = undefined;
         const token = self.tokens.peek(0);
         assert(token != null);
         switch (token.?.kind) {
-            .Ident => {
+            .Ident => blk: {
                 expr = .{ .Var = token.?.source };
                 self.tokens.advance(1); // skip the previous token
+                const next = self.tokens.peek(0).?;
 
-                if (std.meta.eql(self.tokens.peek(0).?.kind, .ParenOpen)) {
+                if (next.kind == .ParenOpen and
+                    self.is_ident_proc_name(token.?.source))
+                {
+                    std.debug.print("proc name is {s}\n", .{token.?.source});
                     const next_parsed = try self.parse_expr();
                     const params = next_parsed.Tuple; // if there is paren open then it has to be tuple
                     expr = .{ .Call = .{ .name = token.?.source, .params = params } };
-                }
-                else if (self.tokens.peek(0).?.kind == .CurlyOpen) {
-                    std.debug.print("{}\n", .{self.tokens.peek(0).?});
-                    var plex_literal = try self.parse_plex_def_fields();
+                } else if (next.kind == .CurlyOpen) {
+                    const prev_tokens = self.tokens;
+                    std.debug.print("plex name is {s}\n", .{token.?.source});
+                    var plex_literal = self.parse_plex_def_fields() catch {
+                        self.tokens = prev_tokens;
+                        expr = .{ .Var = token.?.source };
+                        break :blk;
+                    };
                     plex_literal.name = token.?.source;
                     expr = .{ .Plex = plex_literal };
                 }
