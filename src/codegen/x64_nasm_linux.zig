@@ -179,8 +179,9 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                         _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s}\n", .{ compiled_expr.offset, register });
                     },
                     .Register, .Call => |compiled_expr| {
-                        const register = self.get_callcov_arg_register(idx, compiled_expr.size);
-                        _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
+                        const callconv_register = self.get_callcov_arg_register(idx, compiled_expr.size);
+                        const compiled_register = self.get_register_based_on_size(compiled_expr.expr, compiled_expr.size);
+                        _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_register, callconv_register });
                     },
                     .LitStr => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
@@ -321,7 +322,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
     var lhs_compiled: []const u8 = undefined;
     var rhs_compiled: []const u8 = undefined;
     switch (bin_op.op) {
-        .Add => {
+        .Add, .Sub, .Mul, .Div => {
             var ret: CompiledExpression = undefined;
             switch (lhs) {
                 .LitInt => |expr| {
@@ -341,27 +342,52 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                 },
             }
 
+            var rhs_size: u32 = 0;
             switch (rhs) {
                 .LitInt => |expr| {
                     const register = try self.load_int_literal_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    rhs_size = expr.size;
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
                 .Var => |expr| {
                     const register = try self.load_variable_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    rhs_size = expr.size;
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
                 .Register, .Call => |expr| {
                     const register = self.get_register_based_on_size(expr.expr, expr.size);
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    rhs_size = expr.size;
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
                 .LitStr, .PlexLiteral => {
                     unreachable;
                 },
             }
-            _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+            switch (bin_op.op) {
+                .Add => {
+                    _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+                },
+                .Sub => {
+                    _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+                },
+                .Mul => {
+                    _ = try self.program_builder.append_fmt("   imul {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+                },
+                .Div => {
+                    // TODO(shahzad): support floating point divides
+                    const mnemonic = get_inst_postfix_based_on_size(@intCast( rhs_size ));
+                    const b_reg = self.get_register_based_on_size("b", rhs_size);
+                    _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
+                    _ = try self.program_builder.append_fmt("   mov{s} {s}, %{s}\n", .{ mnemonic, rhs_compiled, b_reg });
+                    _ = try self.program_builder.append_fmt("   xor {s}, {s}\n", .{ rhs_compiled, rhs_compiled });
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{  b_reg });
+                    _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ mnemonic, lhs_compiled, rhs_compiled });
+                },
+                else => unreachable,
+            }
             self.scratch_buffer.reset();
             return ret;
         },
