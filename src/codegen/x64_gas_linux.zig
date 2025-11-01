@@ -366,6 +366,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
                 .Register, .Call => |expr| {
+                    // TODO(shahzad): @bug call will return rax so we can't have them in rhs
                     const register = self.get_register_based_on_size(expr.expr, expr.size);
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     rhs_size = expr.size;
@@ -449,14 +450,18 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             return ret;
         },
         .Eq, .Lt => {
+            // TODO(shahzad): @bug call always return rax so we can't have that in rhs :sob:
             switch (lhs) {
                 .Var => |expr| {
+
                     const register = try self.load_variable_to_register(expr, "a");
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .LitInt => |expr| {
+                    _ = try self.program_builder.append_fmt("# loading variable\n", .{});
                     const register = try self.load_int_literal_to_register(expr, "a");
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    _ = try self.program_builder.append_fmt("# loading variable\n", .{});
                 },
                 .Register, .Call => |expr| {
                     const register = self.get_register_based_on_size(expr.expr, expr.size);
@@ -471,6 +476,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .LitInt => |expr| {
+                    std.debug.print("expr.size for literal int is = {}\n", .{expr.size});
                     const register = try self.load_int_literal_to_register(expr, "d");
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
