@@ -295,19 +295,30 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         .IfCondition => |if_block| {
             // is the block.stack_var_offset set atp?? cause we will need it for initializing the
             // if block
-            _ = try self.type_check_expr(module, block, if_block.condition);
-            return try self.type_check_block(
+            _ = try self.type_check_expr(module, block, if_block.if_.condition);
+            const if_condition_expr_type = try self.type_check_expr(
                 module,
-                if_block.block,
-                block.stack_var_offset,
+                block,
+                if_block.if_.expression,
             );
+            if (if_block.else_expr) |else_expr| {
+                const else_condition_expr_type = try self.type_check_expr(
+                    module,
+                    block,
+                    else_expr,
+                );
+                _ = else_condition_expr_type;
+            }
+            // TODO(shahzad): @feature check if type can resolve into each other
+            // shouldn't be that hard
+            return if_condition_expr_type;
         },
         .WhileLoop => |while_loop| {
             _ = try self.type_check_expr(module, block, while_loop.condition);
-            return try self.type_check_block(
+            return try self.type_check_expr(
                 module,
-                while_loop.block,
-                block.stack_var_offset,
+                block,
+                while_loop.expression,
             );
         },
         // else => |unhandled| {

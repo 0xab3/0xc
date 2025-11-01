@@ -121,9 +121,9 @@ pub const Block = struct {
         return null;
     }
 };
-pub const ConditionalBlock = struct {
+pub const ConditionalExpression = struct {
     condition: *Expression,
-    block: *Block,
+    expression: *Expression,
 };
 // @TODO(shahzad): add source here so we can do error reporting
 
@@ -138,8 +138,11 @@ pub const Expression = union(enum) {
     Call: ProcCall,
     Plex: PlexDef,
     Tuple: ArrayListManaged(Expression),
-    IfCondition: ConditionalBlock,
-    WhileLoop: ConditionalBlock,
+    IfCondition: struct {
+        if_: ConditionalExpression,
+        else_expr: ?*Expression, // block is an expression
+    },
+    WhileLoop: ConditionalExpression,
     Block: *Block,
     BinOp: BinaryOperation,
 };

@@ -222,22 +222,25 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
         },
         .IfCondition => |if_condition| {
             module.total_branches += 1;
-            const n_branch = module.total_branches;
 
-            var label: [32]u8 = undefined;
-            const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
+            var if_skip_label: [32]u8 = undefined;
+            const if_skip_fmt = try std.fmt.bufPrint(&if_skip_label, "LB{d:0>2}", .{module.total_branches});
 
-            const compiled_expr = try self.compile_expr(module, block, if_condition.condition, null);
+            module.total_branches += 1;
+            var else_skip_label: [32]u8 = undefined;
+            const else_skip_fmt = try std.fmt.bufPrint(&else_skip_label, "LB{d:0>2}", .{module.total_branches});
+
+            const compiled_expr = try self.compile_expr(module, block, if_condition.if_.condition, null);
             switch (compiled_expr) {
                 .Register => |reg| {
                     const register = self.get_register_based_on_size(reg.expr, reg.size);
 
                     _ = try self.program_builder.append_fmt("   test %{s}, %{s}\n", .{ register, register });
-                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{label_fmt});
+                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{if_skip_fmt});
                 },
                 .Call => {
                     _ = try self.program_builder.append_fmt("   test %rax, %rax\n", .{});
-                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{label_fmt});
+                    _ = try self.program_builder.append_fmt("   jz {s}\n", .{if_skip_fmt});
                 },
 
                 else => {
@@ -245,8 +248,13 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                     unreachable;
                 },
             }
-            _ = try self.compile_block(module, if_condition.block);
-            _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
+            _ = try self.compile_expr(module, block, if_condition.if_.expression, null);
+            _ = try self.program_builder.append_fmt("   jmp {s}\n", .{else_skip_fmt});
+            _ = try self.program_builder.append_fmt("{s}:\n", .{if_skip_fmt});
+            if (if_condition.else_expr) |else_expr| {
+                _ = try self.compile_expr(module, block, else_expr, null);
+            }
+            _ = try self.program_builder.append_fmt("{s}:\n", .{else_skip_fmt});
             return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
         },
         .WhileLoop => |while_loop| {
@@ -257,7 +265,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             const label_fmt = try std.fmt.bufPrint(&label, "LB{d:0>2}", .{n_branch});
             _ = try self.program_builder.append_fmt("{s}:\n", .{label_fmt});
 
-            _ = try self.compile_block(module, while_loop.block);
+            _ = try self.compile_expr(module, block, while_loop.expression, null);
             const compiled_expr = try self.compile_expr(module, block, while_loop.condition, null);
 
             switch (compiled_expr) {
@@ -378,12 +386,12 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                 },
                 .Div => {
                     // TODO(shahzad): support floating point divides
-                    const mnemonic = get_inst_postfix_based_on_size(@intCast( rhs_size ));
+                    const mnemonic = get_inst_postfix_based_on_size(@intCast(rhs_size));
                     const b_reg = self.get_register_based_on_size("b", rhs_size);
                     _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
                     _ = try self.program_builder.append_fmt("   mov{s} {s}, %{s}\n", .{ mnemonic, rhs_compiled, b_reg });
                     _ = try self.program_builder.append_fmt("   xor {s}, {s}\n", .{ rhs_compiled, rhs_compiled });
-                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{  b_reg });
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{b_reg});
                     _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ mnemonic, lhs_compiled, rhs_compiled });
                 },
                 else => unreachable,
