@@ -9,7 +9,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 const SourceContext = @import("ast.zig").SourceContext;
 const TypeCheck = @import("./type_check.zig");
-const CodeGen = @import("./codegen/x64_nasm_linux.zig");
+const CodeGen = @import("./codegen/x64_gas_linux.zig");
 
 pub fn build_asm_file(file_path: []const u8, out_path: []const u8, is_object_only: bool, object_files: std.array_list.Managed([]const u8)) void {
     var cmd: nob.Cmd = nob.Cmd{};
