@@ -254,6 +254,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             if (if_condition.else_expr) |else_expr| {
                 _ = try self.compile_expr(module, block, else_expr, null);
             }
+            // TODO(shahzad): @pretty @perf? don't generate unnecessary  labels
             _ = try self.program_builder.append_fmt("{s}:\n", .{else_skip_fmt});
             return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
         },
