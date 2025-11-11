@@ -7,6 +7,7 @@ const common = @import("./common.zig");
 const CompiledExpression = common.CompiledExpression;
 const CompiledExprStack = CompiledExpression.CompiledExprStack;
 const CompiledExprLiteral = CompiledExpression.CompiledExprLiteral;
+const CompiledExpCommon = CompiledExpression.CompiledExpCommon;
 
 program_builder: StringBuilder,
 scratch_buffer: StringBuilder,
@@ -168,6 +169,8 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 var local_storage: Storage = .init(.CallArg, 0);
                 const expr_compiled_to_reg = try self.compile_expr(module, block, &param_expr, storage orelse &local_storage);
 
+                // TODO(shahzad): @bug we can't use %rdx for binOp because if we do
+                // that after the 3th argument rdx will get overrided
                 switch (expr_compiled_to_reg) {
                     .LitInt => |compiled_expr| {
                         const register = self.get_callcov_arg_register(idx, compiled_expr.size);
@@ -197,9 +200,10 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                     },
                 }
             }
+            const proc_decl = module.get_proc_decl(call_expr.name);
 
-            // @TODO(shahzad): this is a hack cause we can also define our own put char
-            if (module.get_proc_decl(call_expr.name) != null) {
+            // TODO(shahzad): @hack cause we can also define our own put char
+            if (proc_decl != null) {
                 // c abi expect number of vector register used in rax if a function with
                 // va args is called, we don't support that anyways to just zeroing out rax
                 _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
@@ -212,8 +216,8 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
                 _ = try self.program_builder.append_fmt("   call {s}\n", .{call_expr.name});
             }
-            return .{ .Call = .{ .expr = "a", .size = 8 } };
-            // x64 linux c convention specifies that return value should be in rax... we probably will have to change this
+            // TODO(shahzad): @bug add code to handle returning shit that's bigger than 8 bytes
+            return .{ .Call = .{ .expr = "a", .size = @intCast( proc_decl.?.return_size ) } };
 
         },
         .Block => |blk| {
@@ -303,12 +307,19 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
 //      2 int literals = lea rax + intlit, 2nd intlit
 //      1var 1int literals = load variable in rax and add rax, int lit
 //      2var = load variable in rax, load variable in rdx add
-fn load_int_literal_to_register(self: *Self, expr: CompiledExprLiteral, comptime register: []const u8) ![]const u8 {
+fn load_int_literal_to_register(self: *Self, expr: CompiledExprLiteral, register: []const u8) ![]const u8 {
     const reg = self.get_register_based_on_size(register, expr.size);
     _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, reg });
     return reg;
 }
-pub fn load_variable_to_register(self: *Self, expr: CompiledExprStack, comptime register: []const u8) ![]const u8 {
+fn compile_mov_reg_inst(self: *Self, src: CompiledExpCommon, dest: CompiledExpCommon) ![]const u8 {
+    const rhs = self.get_register_based_on_size(src.expr, src.size);
+    const lhs = self.get_register_based_on_size(dest.expr, dest.size);
+    _ = try self.program_builder.append_fmt("mov %{s}, %{s}", .{ rhs, lhs });
+    return lhs;
+}
+
+pub fn load_variable_to_register(self: *Self, expr: CompiledExprStack, register: []const u8) ![]const u8 {
     const register_size: u32 = if (expr.size <= 4) 4 else 8;
     const reg = self.get_register_based_on_size(register, register_size);
     _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s} \n", .{ expr.offset, reg });
@@ -330,21 +341,31 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
 
     var lhs_compiled: []const u8 = undefined;
     var rhs_compiled: []const u8 = undefined;
+    // TODO(shahzad): @hack this is a hack when we don't know which register rhs will return
+    // if lhs also returns the same register ie .Call op .Call which will be op %rax %rax
+    // so if rhs is register then we change the lhs register to "b"
+    const lhs_register = switch (rhs) {
+        .Register, .Call => "b",
+        else => "a",
+    };
     switch (bin_op.op) {
         .Add, .Sub, .Mul, .Div => {
             var ret: CompiledExpression = undefined;
             switch (lhs) {
                 .LitInt => |expr| {
-                    const register = try self.load_int_literal_to_register(expr, "a");
+                    const register = try self.load_int_literal_to_register(expr, lhs_register);
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, "a");
+                    const register = try self.load_variable_to_register(expr, lhs_register);
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Register, .Call => |expr| {
-                    const register = self.get_register_based_on_size(expr.expr, expr.size);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    const moved_to = try self.compile_mov_reg_inst(
+                        .{ .expr = expr.expr, .size = expr.size },
+                        .{ .expr = lhs_register, .size = expr.size },
+                    );
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
                 },
                 .LitStr, .PlexLiteral => {
                     unreachable;
@@ -366,9 +387,12 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
                 .Register, .Call => |expr| {
-                    // TODO(shahzad): @bug call will return rax so we can't have them in rhs
-                    const register = self.get_register_based_on_size(expr.expr, expr.size);
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+
+                    const moved_to = try self.compile_mov_reg_inst(
+                        .{ .expr = expr.expr, .size = expr.size },
+                        .{ .expr = "d", .size = expr.size },
+                    );
+                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
                     rhs_size = expr.size;
                     ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
                 },
@@ -450,25 +474,29 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             return ret;
         },
         .Eq, .Lt => {
-            // TODO(shahzad): @bug call always return rax so we can't have that in rhs :sob:
-            switch (lhs) {
+            const lhs_size = blk: switch (lhs)  {
                 .Var => |expr| {
-
-                    const register = try self.load_variable_to_register(expr, "a");
+                    const register = try self.load_variable_to_register(expr, lhs_register);
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    break :blk expr.size;
                 },
                 .LitInt => |expr| {
                     _ = try self.program_builder.append_fmt("# loading variable\n", .{});
-                    const register = try self.load_int_literal_to_register(expr, "a");
+                    const register = try self.load_int_literal_to_register(expr, lhs_register);
                     lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                     _ = try self.program_builder.append_fmt("# loading variable\n", .{});
+                    break :blk expr.size;
                 },
                 .Register, .Call => |expr| {
-                    const register = self.get_register_based_on_size(expr.expr, expr.size);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    const moved_to = try self.compile_mov_reg_inst(
+                        .{ .expr = expr.expr, .size = expr.size },
+                        .{ .expr = lhs_register, .size = expr.size },
+                    );
+                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
+                    break :blk expr.size;
                 },
                 .LitStr, .PlexLiteral => unreachable,
-            }
+            };
 
             switch (rhs) {
                 .Var => |expr| {
@@ -481,7 +509,8 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .Register, .Call => |expr| {
-                    const register = self.get_register_based_on_size(expr.expr, expr.size);
+                    // NOTE(shahzad): we are using the lhs size here is this alright chat?
+                    const register = self.get_register_based_on_size(expr.expr, lhs_size);
                     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
                 },
                 .LitStr, .PlexLiteral => unreachable,

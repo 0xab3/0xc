@@ -37,6 +37,7 @@ const PrimitiveTypes = [_]struct { []const u8, u32 }{
     .{ "x64", 8 },
 
     .{ "bool", 1 },
+    .{ "void", 0 },
 };
 
 pub fn init(allocator: Allocator, context: SourceContext) Self {
@@ -436,8 +437,6 @@ fn get_type_size_if_exists(self: *Self, module: *const Ast.Module, expr_type: *c
     return size;
 }
 pub fn type_check_plex_decl(self: *Self, module: *const Ast.Module, plex_decl: *Ast.PlexDecl, outer_plex: ?*Ast.PlexDecl) !void {
-    // TODO(shahzad): @bug type check for recursive Plexes
-
     var total_field_size: usize = 0;
     for (plex_decl.fields.items) |*plex_field| {
         if (outer_plex != null and
@@ -481,8 +480,12 @@ pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
     }
     return err;
 }
-pub fn type_check_proc_decl(self: *Self, proc_decl: *Ast.ProcDecl) !void {
+pub fn type_check_proc_decl(self: *Self, module: *Ast.Module, proc_decl: *Ast.ProcDecl) !void {
     if (self.type_check_argument_list(proc_decl)) return Error.VariableRedefinition;
+    const return_size = try self.get_type_size_if_exists(module, &proc_decl.return_type);
+    // NOTE(shahzad): this will happen when extern struct is used
+    if (return_size == null) @panic("size is defined but not typechecked!");
+    proc_decl.return_size = return_size.?;
 }
 // @TODO(shahzad): typecheck proc calls
 pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
@@ -491,7 +494,7 @@ pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
     }
     // @TODO(shahzad): type check declarations only
     for (module.proc_decls.items) |*proc_decl| {
-        try self.type_check_proc_decl(proc_decl);
+        try self.type_check_proc_decl(module, proc_decl);
     }
     for (module.proc_defs.items) |*proc| {
         try self.type_check_proc(module, proc);

@@ -220,13 +220,23 @@ pub const Argument = struct { // @TODO(shahzad): do we really need this? Aren't 
         self.* = .{ .decl = .init(name, @"type", ptr), .meta = .init(size, is_mutable) };
     }
 };
+// TODO(shahzad): @refactor size should be the part of ExprType
 pub const ProcDecl = struct {
     name: []const u8,
     args_list: ArrayListManaged(Argument),
     return_type: ExprType, // concrete type?
+    return_size: usize,
     const Self = @This();
     pub fn init(name: []const u8, args: ArrayListManaged(Argument), return_type: []const u8, ptr_depth: usize) Self {
-        return .{ .name = name, .args_list = args, .return_type = .{ .type = return_type, .info = .{ .ptr_depth = ptr_depth } } };
+        return .{
+            .name = name,
+            .args_list = args,
+            .return_type = .{
+                .type = return_type,
+                .info = .{ .ptr_depth = ptr_depth },
+            },
+            .return_size = 0,
+        };
     }
     pub fn get_required_params(self: *const Self) ArrayListManaged(Argument) {
         // @TODO(shahzad): impl this function frfr
