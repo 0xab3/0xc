@@ -14,6 +14,7 @@ const Error = error{
     VariableNotDefined,
     ProcedureNotDefined,
     PlexNotDefined,
+    UndefinedPlexField,
     ProcedureCallArgsMismatch,
     TypeMisMatch,
     RecursiveDeclaration,
@@ -184,7 +185,7 @@ pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bi
     } else std.debug.print("asigner_type {}\n", .{asigner_type});
 
     if (!can_type_resolve(asignee_type, asigner_type)) {
-        std.log.err("unable to resolve type {} to {}\n", .{ asigner_type, asignee_type });
+        std.log.err("unable to resolve type {s} to {s}\n", .{ asigner_type.type, asignee_type.type });
         return error.TypeMisMatch;
     }
     const return_type =
@@ -202,15 +203,40 @@ pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bi
 
 fn is_expr_valid_lhs(expr: *Ast.Expression) bool {
     switch (expr.*) {
-        .Var => return true,
+        .Var, .FieldAccess => return true,
         .BinOp => @panic("can bin op be lhs??"),
         .Call, .Block, .IfCondition, .WhileLoop, .LiteralInt, .LiteralString, .NoOp, .Tuple, .Plex => {
             return false;
         },
     }
 }
+
+pub fn type_check_field_expr(
+    self: *Self,
+    module: *Ast.Module,
+    plex_type: Ast.ExprType,
+    field: *const Ast.FieldAccess.Field,
+) !struct { u32, Ast.ExprType } { //offset and type
+    var plex_type_it = plex_type;
+    var field_it: ?*const Ast.FieldAccess.Field = field;
+    var offset: u32 = 0;
+    while (field_it) |fld| {
+        const plex = module.get_plex_decl(plex_type_it.type) orelse {
+            self.context.print_loc(plex_type.type);
+            return Error.TypeNotFound;
+        };
+        const field_meta_data = plex.get_field(fld.name) orelse {
+            self.context.print_loc(field.name);
+            return Error.UndefinedPlexField;
+        };
+        offset += field_meta_data.offset;
+        field_it = fld.next;
+        plex_type_it = field_meta_data.type;
+    }
+    return .{ offset, plex_type_it };
+}
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
-pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *const Ast.Expression) !Ast.ExprType {
+pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *Ast.Expression) !Ast.ExprType {
     //@TODO(shahzad): this is ass brother please fix it
     switch (expression.*) {
         .Var => |expr_as_var| {
@@ -231,7 +257,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
                     return try self.type_check_bin_op(module, block, expr_as_bin_op);
                 },
                 .Lt, .LtEq, .Gt, .GtEq, .Eq => {
-                    // TODO(shahzad): we don't return bool for Eq variant
+                    // TODO(shahzad): @bug we don't return bool for Eq variant
                     return try self.type_check_bin_op(module, block, expr_as_bin_op);
                 },
                 .Ass, .AddAss, .DivAss, .MulAss, .SubAss => {
@@ -310,7 +336,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
                 );
                 _ = else_condition_expr_type;
             }
-            // TODO(shahzad): @feature check if type can resolve into each other
+            // TODO(shahzad): @feat check if type can resolve into each other
             // shouldn't be that hard
             return if_condition_expr_type;
         },
@@ -321,6 +347,14 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
                 block,
                 while_loop.expression,
             );
+        },
+        .FieldAccess => |*field_access| {
+            const field_access_expr_type = try self.type_check_expr(module, block, field_access.expr);
+            const offset, const typ = try self.type_check_field_expr(module, field_access_expr_type, field_access.field.?);
+            field_access.field_offset = offset;
+            field_access.field_offset = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
+            std.debug.print("typ {s}\n", .{typ.type});
+            return typ;
         },
         // else => |unhandled| {
         //     std.log.err("type_check_expr is not implemented for {}\n", .{unhandled});
@@ -387,7 +421,7 @@ pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, blo
         try self.type_check_stmt(module, block, statement);
 
         if (statement.* == .VarDefStack or statement.* == .VarDefStackMut) {
-            const var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
+            var var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
             const size = (try self.get_type_size_if_exists(module, &var_def.type.?)).?;
             block.stack_var_offset += if (size <= 4) 4 else 8;
             var stack_var: Ast.StackVar = undefined;

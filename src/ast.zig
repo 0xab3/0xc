@@ -83,6 +83,17 @@ pub const Module = struct {
         unreachable;
     }
 };
+// TODO(shahzad): make this generic over unary op
+pub const FieldAccess = struct {
+    pub const Field = struct {
+        name: []const u8,
+        next: ?*@This(),
+    };
+    expr: *Expression,
+    field: ?*Field,
+    field_offset: u32, // won't work with pointers
+    field_size: u32,
+};
 pub const BinaryOperation = struct {
     op: BinOp,
     lhs: *Expression,
@@ -145,6 +156,7 @@ pub const Expression = union(enum) {
     WhileLoop: ConditionalExpression,
     Block: *Block,
     BinOp: BinaryOperation,
+    FieldAccess: FieldAccess,
 };
 pub const PlexField = struct {
     name: []const u8,
@@ -158,9 +170,18 @@ pub const PlexDecl = struct {
     name: []const u8,
     size: ?usize, // this is set during the typechecking
     fields: ArrayListManaged(PlexField),
+    const Self = @This();
     pub fn offset_of(field: []const u8) usize {
         _ = field;
         @panic("unimplemented!");
+    }
+    pub fn get_field(self: *const Self, field_name: []const u8) ?PlexField {
+        for (self.fields.items) |value| {
+            if (std.mem.eql(u8, field_name, value.name)) {
+                return value;
+            }
+        }
+        return null;
     }
 };
 // @TODO(shahzad): add source in every field here so we can do error reporting

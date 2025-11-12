@@ -235,7 +235,8 @@ pub const Parser = struct {
                     else => {},
                 }
             },
-            .Plex, .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp => {},
+            // TODO(shahzad): @feat should we make plex a block too?
+            .Plex, .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp, .FieldAccess => {},
         }
     }
     fn parse_block(self: *Self) anyerror!*Ast.Block {
@@ -429,6 +430,30 @@ pub const Parser = struct {
     //
     // @TODO(shahzad): make it so this respect precedence
 
+    fn parse_field_access(self: *Self, first_expr: *Ast.Expression) anyerror!Ast.FieldAccess {
+        var token = self.tokens.peek(0).?;
+        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .field_offset = undefined,.field_size = undefined };
+        var field_ptr: *?*Ast.FieldAccess.Field = &top_field.field;
+        while (token.kind == .Dot) {
+            self.tokens.advance(1);
+            token = self.tokens.peek(0).?;
+            // TODO(shahzad): @feat we can add optional unwrapping or dereferencing here
+            if (token.kind != .Ident) {
+                return Ast.Error.UnexpectedToken;
+            }
+            var field = try self.allocator.create(Ast.FieldAccess.Field);
+            field.name = token.source;
+            field.next = null;
+
+            // absolute coding
+            field_ptr.* = field;
+            field_ptr = &field.next;
+
+            self.tokens.advance(1);
+            token = self.tokens.peek(0).?;
+        }
+        return top_field;
+    }
     fn parse_expr(self: *Self) anyerror!Ast.Expression {
         var expr: Ast.Expression = undefined;
         const lhs_expr = try self.parse_unit_expr();
@@ -513,11 +538,6 @@ pub const Parser = struct {
         const exprs = try self.try_parse_exprs_between(.CurlyOpen);
         return .{ .name = undefined, .members = exprs };
     }
-    fn is_ident_proc_name(self: *Self, ident: []const u8) bool {
-        // useless
-        if (self.module.get_proc(ident)) |proc| return std.mem.eql(u8, proc.name, ident);
-        return false;
-    }
     fn parse_unit_expr(self: *Self) anyerror!Ast.Expression {
         var expr: Ast.Expression = undefined;
         const token = self.tokens.peek(0);
@@ -528,21 +548,23 @@ pub const Parser = struct {
                 self.tokens.advance(1); // skip the previous token
                 const next = self.tokens.peek(0).?;
 
-                if (next.kind == .ParenOpen and
-                    self.is_ident_proc_name(token.?.source))
-                {
-                    const next_parsed = try self.parse_expr();
-                    const params = next_parsed.Tuple; // if there is paren open then it has to be tuple
-                    expr = .{ .Call = .{ .name = token.?.source, .params = params } };
-                } else if (next.kind == .CurlyOpen) {
-                    const prev_tokens = self.tokens;
-                    var plex_literal = self.parse_plex_def_fields() catch {
-                        self.tokens = prev_tokens;
-                        expr = .{ .Var = token.?.source };
-                        break :blk;
-                    };
-                    plex_literal.name = token.?.source;
-                    expr = .{ .Plex = plex_literal };
+                switch (next.kind) {
+                    .ParenOpen => {
+                        const next_parsed = try self.parse_expr();
+                        const params = next_parsed.Tuple; // if there is paren open then it has to be tuple
+                        expr = .{ .Call = .{ .name = token.?.source, .params = params } };
+                    },
+                    .CurlyOpen => {
+                        const prev_tokens = self.tokens;
+                        var plex_literal = self.parse_plex_def_fields() catch {
+                            self.tokens = prev_tokens;
+                            expr = .{ .Var = token.?.source };
+                            break :blk;
+                        };
+                        plex_literal.name = token.?.source;
+                        expr = .{ .Plex = plex_literal };
+                    },
+                    else => {},
                 }
             },
             .ParenOpen => {
@@ -587,6 +609,12 @@ pub const Parser = struct {
                 token.?.print_loc();
                 std.debug.panic("expression parsing for {} is not implemented!", .{token.?.kind});
             },
+        }
+        //TODO(shahzad): @bug field access can be done on anything i.e. if (){}.x else{}.y
+        if (self.tokens.peek(0).?.kind == .Dot) {
+            const expr_duped = try self.allocator.create(Ast.Expression);
+            expr_duped.* = expr;
+            expr = .{ .FieldAccess = try self.parse_field_access(expr_duped) };
         }
 
         return expr;

@@ -18,7 +18,7 @@ const keywords = [_]struct { []const u8, TokenKind }{
     .{ "if", .If },
     .{ "else", .Else },
     .{ "while", .While },
-    .{"plex", .Plex},
+    .{ "plex", .Plex },
 };
 
 // @TODO(shahzad): this should be a common thingy
@@ -32,6 +32,7 @@ pub const BinOp = enum {
     SubAss,
     MulAss,
     DivAss,
+    // TODO(shahzad): @pretty add these in comparison op
     Eq,
     Lt,
     Gt,
@@ -60,6 +61,7 @@ pub const TokenKind = union(enum) {
     Semi: void,
     Colon: void,
     Comma: void,
+    Dot: void,
 
     // keywords
     ProcDecl: void,
@@ -90,6 +92,7 @@ pub const TokenKind = union(enum) {
             ':' => .{ 1, .Colon },
             ';' => .{ 1, .Semi },
             ',' => .{ 1, .Comma },
+            '.' => .{ 1, .Dot },
 
             '-' => blk: {
                 if (tok.len > 1) {
@@ -150,16 +153,16 @@ pub const TokenKind = union(enum) {
             .LiteralFloat => "float_lit",
             .Ident => "ident",
 
-            .Op => |op| blk: switch (op) {
-                .Add => break :blk "+",
-                .Sub => break :blk "-",
-                .Mul => break :blk "*",
-                .Div => break :blk "/",
-                .Ass => break :blk "=",
-                .AddAss => break :blk "+=",
-                .SubAss => break :blk "-=",
-                .MulAss => break :blk "*=",
-                .DivAss => break :blk "/=",
+            .Op => |op| switch (op) {
+                .Add =>  "+",
+                .Sub =>  "-",
+                .Mul =>  "*",
+                .Div =>  "/",
+                .Ass =>  "=",
+                .AddAss =>  "+=",
+                .SubAss =>  "-=",
+                .MulAss =>  "*=",
+                .DivAss =>  "/=",
                 .Eq => "==",
                 .Lt => "<",
                 .Gt => ">",
@@ -176,6 +179,7 @@ pub const TokenKind = union(enum) {
             .Semi => ";",
             .Colon => ":",
             .Comma => ",",
+            .Dot => ".",
             .ProcDecl => "proc",
             .VarDef => "let",
             .Mut => "mut",

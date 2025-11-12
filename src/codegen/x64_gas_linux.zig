@@ -9,9 +9,11 @@ const CompiledExprStack = CompiledExpression.CompiledExprStack;
 const CompiledExprLiteral = CompiledExpression.CompiledExprLiteral;
 const CompiledExpCommon = CompiledExpression.CompiledExpCommon;
 
+allocator: Allocator,
 program_builder: StringBuilder,
 scratch_buffer: StringBuilder,
 string_arena: StringBuilder,
+
 const Self = @This();
 pub const Storage = struct {
     pub const Type = enum { Stack, CallArg };
@@ -37,7 +39,7 @@ pub const Storage = struct {
 
 pub fn init(allocator: Allocator) Self {
     var arena = std.heap.ArenaAllocator.init(allocator);
-    return .{ .program_builder = .init(allocator), .scratch_buffer = .init(allocator), .string_arena = .init(arena.allocator()) };
+    return .{ .allocator = allocator, .program_builder = .init(allocator), .scratch_buffer = .init(allocator), .string_arena = .init(arena.allocator()) };
 }
 fn _get_size_of_register(reg: []const u8) u16 {
     return switch (reg.len) {
@@ -113,7 +115,7 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
                 var register = try self.load_variable_to_register(expr, "d");
                 if (field_size < expr.size) {
                     const smol_register = try self.load_variable_to_register(expr, "d");
-                    _ = try self.program_builder.append_fmt("   movz{s}l %{s}, %{s}", .{ postfix, smol_register, register });
+                    _ = try self.program_builder.append_fmt("   movz{s}l %{s}, %{s}\n", .{ postfix, smol_register, register });
                     register = smol_register;
                 }
                 lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
@@ -131,6 +133,7 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
                 _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
                 lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
             },
+            .FieldAccess => @panic("unhandled"),
             // TODO(shahzad): this should be that hard but i am tired as shit
             .PlexLiteral => @panic("recursive plex literals are not supported as of now"),
         }
@@ -155,6 +158,14 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             const stack_offset = stack_var.?.offset;
 
             return .{ .Var = .{ .offset = stack_offset, .size = stack_var.?.meta.size } };
+        },
+        .FieldAccess => |*field_access| {
+            // TODO(shahzad): @fixme we don't support pointers to struct :sob:
+            const initial_expr = try self.compile_expr(module, block, field_access.expr, null);
+            const inital_expr_duped = try self.allocator.create(@TypeOf(initial_expr));
+            inital_expr_duped.* = initial_expr;
+            const offset = field_access.field_offset;
+            return .{ .FieldAccess = .{ .initial_expr = inital_expr_duped, .offset = offset, .size = field_access.field_size } };
         },
         .Plex => |plex| {
             assert(storage != null);
@@ -198,6 +209,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                     .PlexLiteral => {
                         unreachable;
                     },
+                    .FieldAccess => @panic("todo!"),
                 }
             }
             const proc_decl = module.get_proc_decl(call_expr.name);
@@ -216,9 +228,13 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
                 _ = try self.program_builder.append_fmt("   call {s}\n", .{call_expr.name});
             }
+            const return_size = switch (proc_decl.?.return_size) {
+                1...4 => 4,
+                5...8 => 8,
+                else => proc_decl.?.return_size,
+            };
             // TODO(shahzad): @bug add code to handle returning shit that's bigger than 8 bytes
-            return .{ .Call = .{ .expr = "a", .size = @intCast( proc_decl.?.return_size ) } };
-
+            return .{ .Call = .{ .expr = "a", .size = @intCast(return_size) } };
         },
         .Block => |blk| {
             try self.compile_block(module, blk);
@@ -312,17 +328,17 @@ fn load_int_literal_to_register(self: *Self, expr: CompiledExprLiteral, register
     _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ expr.literal, reg });
     return reg;
 }
-fn compile_mov_reg_inst(self: *Self, src: CompiledExpCommon, dest: CompiledExpCommon) ![]const u8 {
+fn compile_mov_reg_inst(self: *Self, src: CompiledExpCommon, dest: []const u8) ![]const u8 {
     const rhs = self.get_register_based_on_size(src.expr, src.size);
-    const lhs = self.get_register_based_on_size(dest.expr, dest.size);
-    _ = try self.program_builder.append_fmt("mov %{s}, %{s}", .{ rhs, lhs });
+    const lhs = self.get_register_based_on_size(dest, src.size);
+    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ rhs, lhs });
     return lhs;
 }
 
 pub fn load_variable_to_register(self: *Self, expr: CompiledExprStack, register: []const u8) ![]const u8 {
     const register_size: u32 = if (expr.size <= 4) 4 else 8;
     const reg = self.get_register_based_on_size(register, register_size);
-    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s} \n", .{ expr.offset, reg });
+    _ = try self.program_builder.append_fmt("   mov -{}(%rbp), %{s}\n", .{ expr.offset, reg });
     return reg;
 }
 
@@ -333,14 +349,53 @@ fn get_compare_store_inst_based_on_op(bin_op: *const Ast.BinaryOperation) []cons
         else => @panic("unimplemented!"),
     }
 }
+pub fn compiled_expr_to_asm(self: *Self, compiled_expr: CompiledExpression, register: []const u8, register_size: ?u32) !struct { CompiledExpression, []const u8 } {
+    var expr_compiled: []const u8 = undefined;
+    const ret: CompiledExpression = blk: switch (compiled_expr) {
+        .LitInt => |expr| {
+            const reg = try self.load_int_literal_to_register(expr, register);
+            expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{reg});
+            break :blk .{ .Register = .{ .expr = register, .size = expr.size } };
+        },
+        .Var => |expr| {
+            const reg = try self.load_variable_to_register(expr, register);
+            expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{reg});
+            break :blk .{ .Register = .{ .expr = register, .size = expr.size } };
+        },
+        .Register, .Call => |expr| {
+
+            // .{ .expr = register, .size = register_size orelse expr.size },
+            const moved_to = try self.compile_mov_reg_inst(
+                .{ .expr = expr.expr, .size = expr.size },
+                register,
+            );
+            std.debug.print("register {s}{} moved to {s}\n", .{ expr.expr, expr.size, moved_to });
+            expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
+            break :blk .{ .Register = .{ .expr = register, .size = register_size orelse expr.size } };
+        },
+        .LitStr => |expr| {
+            const reg = self.get_register_based_on_size(register, 8);
+            _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, reg });
+            expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{reg});
+            break :blk .{ .Register = .{ .expr = "unreachable you cannot assign to strlit", .size = 8 } };
+        },
+        .PlexLiteral => {
+            _ = try self.program_builder.append_fmt("   xor %rax,%rax # fix this hack\n", .{});
+            self.scratch_buffer.reset();
+            break :blk .PlexLiteral;
+        },
+        .FieldAccess => {
+            @panic("unimplemented!");
+        },
+    };
+    return .{ ret, expr_compiled };
+}
 pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation, storage: ?*Storage) anyerror!CompiledExpression {
     // TODO(shahzad): @bug 64 bits bin ops are fucked :sob:
     const lhs = try self.compile_expr(module, block, bin_op.lhs, storage);
     const rhs = try self.compile_expr(module, block, bin_op.rhs, storage);
     // @TODO(shahzad): @pretty change this to if
 
-    var lhs_compiled: []const u8 = undefined;
-    var rhs_compiled: []const u8 = undefined;
     // TODO(shahzad): @hack this is a hack when we don't know which register rhs will return
     // if lhs also returns the same register ie .Call op .Call which will be op %rax %rax
     // so if rhs is register then we change the lhs register to "b"
@@ -348,187 +403,120 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
         .Register, .Call => "b",
         else => "a",
     };
-    switch (bin_op.op) {
-        .Add, .Sub, .Mul, .Div => {
-            var ret: CompiledExpression = undefined;
-            switch (lhs) {
-                .LitInt => |expr| {
-                    const register = try self.load_int_literal_to_register(expr, lhs_register);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, lhs_register);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .Register, .Call => |expr| {
-                    const moved_to = try self.compile_mov_reg_inst(
-                        .{ .expr = expr.expr, .size = expr.size },
-                        .{ .expr = lhs_register, .size = expr.size },
-                    );
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
-                },
-                .LitStr, .PlexLiteral => {
-                    unreachable;
-                },
-            }
 
-            var rhs_size: u32 = 0;
-            switch (rhs) {
-                .LitInt => |expr| {
-                    const register = try self.load_int_literal_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    rhs_size = expr.size;
-                    ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
-                },
-                .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    rhs_size = expr.size;
-                    ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
-                },
-                .Register, .Call => |expr| {
-
-                    const moved_to = try self.compile_mov_reg_inst(
-                        .{ .expr = expr.expr, .size = expr.size },
-                        .{ .expr = "d", .size = expr.size },
-                    );
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
-                    rhs_size = expr.size;
-                    ret = .{ .Register = .{ .expr = "d", .size = expr.size } };
-                },
-                .LitStr, .PlexLiteral => {
-                    unreachable;
-                },
-            }
-            switch (bin_op.op) {
-                .Add => {
-                    _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
-                },
-                .Sub => {
-                    _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
-                },
-                .Mul => {
-                    _ = try self.program_builder.append_fmt("   imul {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
-                },
-                .Div => {
-                    // TODO(shahzad): support floating point divides
-                    const mnemonic = get_inst_postfix_based_on_size(@intCast(rhs_size));
-                    const b_reg = self.get_register_based_on_size("b", rhs_size);
-                    _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
-                    _ = try self.program_builder.append_fmt("   mov{s} {s}, %{s}\n", .{ mnemonic, rhs_compiled, b_reg });
-                    _ = try self.program_builder.append_fmt("   xor {s}, {s}\n", .{ rhs_compiled, rhs_compiled });
-                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{b_reg});
-                    _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ mnemonic, lhs_compiled, rhs_compiled });
-                },
-                else => unreachable,
-            }
-            self.scratch_buffer.reset();
-            return ret;
-        },
+    const lhs_compiled_expr, const lhs_compiled = blk: switch (bin_op.op) {
         .Ass => {
-            var ret: CompiledExpression = undefined;
-            var lhs_size: u32 = 0;
             switch (lhs) {
                 .Var => |expr| {
-                    lhs_size = if (expr.size <= 4) 4 else 8;
-                    lhs_compiled = try self.scratch_buffer.append_fmt("-{}(%rbp)", .{expr.offset});
-                    ret = .{ .Var = .{ .offset = expr.offset, .size = expr.size } };
+                    // lhs_size = if (expr.size <= 4) 4 else 8;
+                    const lhs_compiled = try self.scratch_buffer.append_fmt("-{}(%rbp)", .{expr.offset});
+                    const ret: CompiledExpression = .{ .Var = .{ .offset = expr.offset, .size = expr.size } };
+                    break :blk .{ ret, lhs_compiled };
+                },
+                .FieldAccess => {
+                    @panic("unimplemented!");
                 },
                 else => unreachable, // we don't give a shit as of now
             }
-            // lhs is memory pointer so if you don't put rhs in register it requires a size mnemonic
-            switch (rhs) {
-                .LitInt => |expr| {
-                    const register = try self.load_int_literal_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .LitStr => |expr| {
-                    const register = self.get_register_based_on_size("d", 8);
-                    _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .PlexLiteral => {
-                    // TODO(shahzad): @bug bin op assignment is not implemented
-                    // NOTE(shahzad): @hack clear the rax filled for lhs
-                    _ = try self.program_builder.append_fmt("   xor %rax,%rax # fix this hack\n", .{});
-                    self.scratch_buffer.reset();
-                    return .PlexLiteral;
-                },
+        },
+        else => break :blk try self.compiled_expr_to_asm(lhs, lhs_register, null),
+    };
+    const rhs_compiled_expr, const rhs_compiled = blk: switch (bin_op.op) {
+        .Ass => {
+            return switch (rhs) {
                 .Register, .Call => |expr| {
+                    const lhs_size: u32 = if (lhs.get_size() <= 4) 4 else 8;
                     const register = self.get_register_based_on_size(expr.expr, lhs_size);
                     if (lhs == .Var and lhs_size <= 4) {
                         const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
                         _ = try self.program_builder.append_fmt("   mov{s} %{s}, %{s} # extending\n", .{ lhs_mnemonic, register, register });
                     }
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    const rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                    const ret: CompiledExpression = .{ .Register = .{ .expr = "unreachable this shit #assignment", .size = expr.size } };
+                    break :blk .{ ret, rhs_compiled };
                 },
+                .FieldAccess => {
+                    @panic("unimplemented!");
+                },
+                else => break :blk try self.compiled_expr_to_asm(rhs, "d", null),
+            };
+        },
+        .LtEq, .GtEq, .Lt, .Gt, .Eq => {
+            const lhs_size: u32 = if (lhs_compiled_expr.get_size() <= 4) 4 else 8;
+            std.debug.print("lhs size is {} and lhs is {s}\n", .{ lhs_compiled_expr.get_size(), lhs_compiled });
+            break :blk try self.compiled_expr_to_asm(rhs, "d", lhs_size);
+        },
+        else => break :blk try self.compiled_expr_to_asm(rhs, "d", null),
+    };
+    switch (bin_op.op) {
+        .Add, .Sub, .Mul, .Div, .Eq, .Lt => {
+            switch (lhs) {
+                .LitStr, .PlexLiteral => unreachable,
+                else => {},
             }
+            switch (rhs) {
+                .LitStr, .PlexLiteral => unreachable,
+                else => {},
+            }
+        },
+        else => {},
+    }
+    var ret: CompiledExpression = rhs_compiled_expr;
+    switch (bin_op.op) {
+        .Add => {
+            _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+        },
+        .Sub => {
+            _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+        },
+        .Mul => {
+            _ = try self.program_builder.append_fmt("   imul {s}, {s}\n", .{ lhs_compiled, rhs_compiled });
+        },
+        .Div => {
+            // TODO(shahzad): support floating point divides
+            const mnemonic = get_inst_postfix_based_on_size(@intCast(rhs_compiled_expr.get_size()));
+            const b_reg = self.get_register_based_on_size("b", rhs_compiled_expr.get_size());
+            _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
+            _ = try self.program_builder.append_fmt("   mov{s} {s}, %{s}\n", .{ mnemonic, rhs_compiled, b_reg });
+            _ = try self.program_builder.append_fmt("   xor {s}, {s}\n", .{ rhs_compiled, rhs_compiled });
+            _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{b_reg});
+            _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ mnemonic, lhs_compiled, rhs_compiled });
+        },
 
-            const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
-            _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ lhs_mnemonic, rhs_compiled, lhs_compiled });
-            self.scratch_buffer.reset();
-            return ret;
+        .Ass => {
+            if (rhs != .PlexLiteral) {
+                ret = lhs_compiled_expr;
+                const lhs_size: u32 = if (lhs.get_size() <= 4) 4 else 8;
+                const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
+                _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ lhs_mnemonic, rhs_compiled, lhs_compiled });
+            }
         },
         .Eq, .Lt => {
-            const lhs_size = blk: switch (lhs)  {
-                .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, lhs_register);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    break :blk expr.size;
-                },
-                .LitInt => |expr| {
-                    _ = try self.program_builder.append_fmt("# loading variable\n", .{});
-                    const register = try self.load_int_literal_to_register(expr, lhs_register);
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                    _ = try self.program_builder.append_fmt("# loading variable\n", .{});
-                    break :blk expr.size;
-                },
-                .Register, .Call => |expr| {
-                    const moved_to = try self.compile_mov_reg_inst(
-                        .{ .expr = expr.expr, .size = expr.size },
-                        .{ .expr = lhs_register, .size = expr.size },
-                    );
-                    lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{moved_to});
-                    break :blk expr.size;
-                },
-                .LitStr, .PlexLiteral => unreachable,
-            };
-
             switch (rhs) {
-                .Var => |expr| {
-                    const register = try self.load_variable_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .LitInt => |expr| {
-                    std.debug.print("expr.size for literal int is = {}\n", .{expr.size});
-                    const register = try self.load_int_literal_to_register(expr, "d");
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
-                .Register, .Call => |expr| {
-                    // NOTE(shahzad): we are using the lhs size here is this alright chat?
-                    const register = self.get_register_based_on_size(expr.expr, lhs_size);
-                    rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
-                },
+                // .Register, .Call => |expr| {
+                //     // NOTE(shahzad): we are using the lhs size here is this alright chat?
+                //     const register = self.get_register_based_on_size(expr.expr, lhs_size);
+                //     rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+                // },
                 .LitStr, .PlexLiteral => unreachable,
+                else => {},
             }
 
             _ = try self.program_builder.append_fmt("   cmpl {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
             const cmp_inst = get_compare_store_inst_based_on_op(bin_op);
             _ = try self.program_builder.append_fmt("   {s} %dl\n", .{cmp_inst});
 
-            self.scratch_buffer.reset();
             // NOTE(shahzad): @bug we expect that any op with respect to a comparison has to be
             // 32 bits wide is not always the case
             _ = try self.program_builder.append_fmt("   movzbl %dl, %edx\n", .{});
-            return .{ .Register = .{ .expr = "d", .size = 4 } };
+            self.scratch_buffer.reset();
+            ret = .{ .Register = .{ .expr = "d", .size = 4 } };
         },
 
         else => std.debug.panic("compile_expr_bin_op for {} is not implemented!", .{bin_op}),
     }
+    self.scratch_buffer.reset();
+    return ret;
 }
 pub fn compile_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !void {
     switch (statement.*) {
