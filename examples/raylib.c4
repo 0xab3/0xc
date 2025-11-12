@@ -18,11 +18,9 @@ proc main() -> void {
   let RED: Color = Color {255, 0, 0, 255};
   InitWindow(800, 600, "raylib speedrun");
 
-  // this doesn't have precedence that's why i have to do this :sob:
-  let should_window_close: x8 = WindowShouldClose();
+  let padding: x8;
 
-  while should_window_close == 0 {
-    should_window_close = WindowShouldClose();
+  while 0 == WindowShouldClose() {
 
     if IsKeyPressed(81) {
       CloseWindow();

@@ -5,9 +5,9 @@ plex Color {
   a: x8,
 }
 
-proc print_color(color: Color) -> void;
+proc printf(fmt: ^x8, r:x8,g:x8,b:x8,a:x8) -> void;
 proc main() -> void {
   let color: Color =  Color {10,20,30,40};
-  print_color(color);
-
+  let x: x8 = color.r + 10;
+  // printf("color {r: %d, g: %d, b: %d, a: %d};", color.r, color.g, color.b, color.a);
 }
