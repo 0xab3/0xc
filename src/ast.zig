@@ -91,7 +91,7 @@ pub const FieldAccess = struct {
     };
     expr: *Expression,
     field: ?*Field,
-    field_offset: u32, // won't work with pointers
+    last_field_offset: u32, // won't work with pointers
     field_size: u32,
 };
 pub const BinaryOperation = struct {

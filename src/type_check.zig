@@ -230,6 +230,7 @@ pub fn type_check_field_expr(
             return Error.UndefinedPlexField;
         };
         offset += field_meta_data.offset;
+        std.debug.print("offset is this shit my guy lesss gooo {}\n", .{offset});
         field_it = fld.next;
         plex_type_it = field_meta_data.type;
     }
@@ -351,8 +352,8 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         .FieldAccess => |*field_access| {
             const field_access_expr_type = try self.type_check_expr(module, block, field_access.expr);
             const offset, const typ = try self.type_check_field_expr(module, field_access_expr_type, field_access.field.?);
-            field_access.field_offset = offset;
-            field_access.field_offset = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
+            field_access.last_field_offset = offset;
+            field_access.field_size = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
             std.debug.print("typ {s}\n", .{typ.type});
             return typ;
         },
@@ -489,7 +490,7 @@ pub fn type_check_plex_decl(self: *Self, module: *const Ast.Module, plex_decl: *
             plex_field_size.? = untyped_plex.?.size.?;
         }
         plex_field.size = @intCast(plex_field_size.?);
-
+        plex_field.offset = @intCast(total_field_size);
         total_field_size += plex_field.size;
     }
     plex_decl.size = total_field_size;

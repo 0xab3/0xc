@@ -432,7 +432,7 @@ pub const Parser = struct {
 
     fn parse_field_access(self: *Self, first_expr: *Ast.Expression) anyerror!Ast.FieldAccess {
         var token = self.tokens.peek(0).?;
-        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .field_offset = undefined,.field_size = undefined };
+        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .last_field_offset = undefined,.field_size = undefined };
         var field_ptr: *?*Ast.FieldAccess.Field = &top_field.field;
         while (token.kind == .Dot) {
             self.tokens.advance(1);
