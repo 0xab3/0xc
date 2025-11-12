@@ -5,9 +5,15 @@ plex Color {
   a: x8,
 }
 
-proc printf(fmt: ^x8, r:x8,g:x8,b:x8,a:x8) -> void;
+proc printf(fmt: ^x8, r:x8) -> void;
 proc main() -> void {
   let color: Color =  Color {10,20,30,40};
   let x: x8 = color.r + 10;
-  // printf("color {r: %d, g: %d, b: %d, a: %d};", color.r, color.g, color.b, color.a);
+  let y: x8 = color.g + 10;
+  let z: x8 = color.b + 10;
+  let m: x8 = color.a + 10;
+  printf("x is this %d\n",x);
+  printf("y is this %d\n",y);
+  printf("z is this %d\n",z);
+  printf("m is this %d\n",m);
 }
